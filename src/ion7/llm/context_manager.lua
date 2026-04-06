@@ -68,10 +68,28 @@ function ContextManager:set_system(system_text)
     end
 
     local ctx, vocab = self._ctx, self._vocab
-    local tokens, n = vocab:tokenize(
-        vocab:apply_template({ { role = "system", content = system_text } }, false),
-        false, true)
 
+    -- Some templates (e.g. Qwen3.5 Jinja2) throw when the message list
+    -- contains only a system role with no user message.
+    -- Fallback: apply with an empty user turn and trim the user portion.
+    local prompt
+    local ok, result = pcall(vocab.apply_template, vocab,
+        { { role = "system", content = system_text } }, false)
+    if ok then
+        prompt = result
+    else
+        local full = vocab:apply_template({
+            { role = "system", content = system_text },
+            { role = "user",   content = "" },
+        }, false)
+        -- Trim at the start of the user turn (ChatML, Llama-2, Phi formats)
+        local user_start = full:find("\n<|im_start|>user", 1, true)
+                        or full:find("\n%[INST%]", 1, false)
+                        or full:find("\n<|user|>", 1, true)
+        prompt = user_start and full:sub(1, user_start) or full
+    end
+
+    local tokens, n = vocab:tokenize(prompt, false, true)
     ctx:kv_clear()
     ctx:decode(tokens, n, 0, 0)
 
@@ -155,10 +173,20 @@ end
 -- ── Eviction ──────────────────────────────────────────────────────────────────
 
 -- Per-message KV end positions (approximation via single-message tokenization).
+-- Some templates (e.g. Qwen3.5) fail when given a single assistant message with
+-- add_generation_prompt=false. Fall back to raw content tokenization in that case.
 function ContextManager:_compute_msg_positions(msgs, base_pos)
     local vocab, pos, ends = self._vocab, base_pos, {}
     for i, msg in ipairs(msgs) do
-        local _, n = vocab:tokenize(vocab:apply_template({ msg }, false), false, true)
+        local ok, tmpl = pcall(vocab.apply_template, vocab, { msg }, false)
+        local _, n
+        if ok then
+            _, n = vocab:tokenize(tmpl, false, true)
+        else
+            -- Fallback: tokenize raw content + small fixed overhead for role tokens
+            _, n = vocab:tokenize(msg.content or "", false, true)
+            n = n + 6  -- role header + newlines overhead
+        end
         pos = pos + n
         ends[i] = pos
     end
