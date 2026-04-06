@@ -46,6 +46,11 @@ function ContextManager.new(ctx, vocab, opts)
         _eviction         = opts.eviction or "message",
         _n_evictions      = 0,
         _n_tokens_evicted = 0,
+        -- When true, append an empty <think>\n\n</think>\n block to the generation
+        -- prefix. This is the llama.cpp-compatible equivalent of enable_thinking=False
+        -- from Qwen3/3.5's Jinja template: the model starts generating *after* the
+        -- think block, consuming zero thinking tokens.
+        _no_think         = opts.no_think or false,
     }, ContextManager)
 end
 
@@ -104,6 +109,21 @@ end
 ---
 --- @param  name  string
 --- @param  fn    function
+--- Build a prompt string from messages, appending an empty think block when
+--- no_think=true. This is the llama.cpp equivalent of enable_thinking=False:
+--- the Qwen3/3.5 Jinja template adds <think>\n\n</think>\n to the generation
+--- prefix so the model starts responding immediately with zero thinking tokens.
+--- @param  msgs     table    Message array
+--- @param  add_ass  boolean  Add generation prompt
+--- @return string
+function ContextManager:_prompt(msgs, add_ass)
+    local p = self._vocab:apply_template(msgs, add_ass)
+    if add_ass and self._no_think then
+        p = p .. "<think>\n\n</think>\n"
+    end
+    return p
+end
+
 function ContextManager:set_hook(name, fn)
     assert(type(name) == "string",   "[ion7.llm.context_manager] hook name must be a string")
     assert(type(fn)   == "function", "[ion7.llm.context_manager] hook must be a function")
@@ -266,7 +286,7 @@ function ContextManager:prepare(session)
     local beh = self._hooks.before_encode
     if beh then msgs = beh(msgs, session) or msgs end
 
-    local tokens, n = vocab:tokenize(vocab:apply_template(msgs, true), false, true)
+    local tokens, n = vocab:tokenize(self:_prompt(msgs, true), false, true)
     local n_ctx_eff  = ctx:n_ctx_seq()
 
     -- Overflow handling
@@ -296,7 +316,7 @@ function ContextManager:prepare(session)
 
         while #msgs > 1 do
             dropped[#dropped + 1] = table.remove(msgs, 1)
-            tokens, n = vocab:tokenize(vocab:apply_template(msgs, true), false, true)
+            tokens, n = vocab:tokenize(self:_prompt(msgs, true), false, true)
             if n <= available then break end
         end
 
@@ -304,7 +324,7 @@ function ContextManager:prepare(session)
         if n > available then
             dropped[#dropped + 1] = msgs[1]
             msgs = { msgs[#msgs] }
-            tokens, n = vocab:tokenize(vocab:apply_template(msgs, true), false, true)
+            tokens, n = vocab:tokenize(self:_prompt(msgs, true), false, true)
         end
 
         if #dropped > 0 then

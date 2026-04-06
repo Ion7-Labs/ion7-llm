@@ -69,6 +69,7 @@ function llm.init(opts)
         ),
         n_sink   = opts.n_sink,
         eviction = opts.eviction,
+        no_think = not (opts.think ~= false),  -- true when think=false
     })
     if opts.system then cm:set_system(opts.system) end
 
