@@ -460,7 +460,7 @@ T.test("thinking profile exists as function", function()
 end)
 
 T.test("no unknown keys in profiles", function()
-    local known = { balanced=1, precise=1, creative=1, code=1, fast=1, thinking=1 }
+    local known = { balanced=1, precise=1, creative=1, code=1, fast=1, thinking=1, extended=1 }
     for k, _ in pairs(profiles) do
         T.ok(known[k] ~= nil, "unknown profile: " .. tostring(k))
     end

@@ -20,22 +20,46 @@ local _state = {}
 --- Initialise ion7-llm. Must be called before anything else.
 ---
 --- @param  opts  table
----   opts.model         string   Path to .gguf file. Required.
----   opts.n_gpu_layers  number?  GPU offload layers. Default: auto-fit.
----   opts.n_ctx         number?  Context window. Default: auto-fit or 4096.
----   opts.n_seq_max     number?  Max parallel sessions. Default: 1.
----   opts.system        string?  Default system prompt (prefix cache).
----   opts.sampler       string?  Sampler profile name. Default: "balanced".
----   opts.max_tokens    number?  Default max tokens. Default: 2048.
----   opts.think         bool?    Strip <think> blocks. Default: false.
----   opts.think_budget  number?  Max tokens inside a think block. Default: nil.
----   opts.kv_type       string?  KV quantization: "f16" (default), "q8_0", "q4_0", etc.
----   opts.kv_type_k     string?  K cache type independently.
----   opts.kv_type_v     string?  V cache type independently.
----   opts.n_sink        number?  Attention sink size. Default: 4.
----   opts.eviction      string?  "message" (default) or "fifo".
----   opts.headroom      number?  Override KV headroom reserved for generation.
----   opts.log_level     number?  0 = silent (default).
+---   opts.model           string   Path to .gguf file. Required.
+---   opts.n_gpu_layers    number?  GPU offload layers. Default: auto-fit.
+---   opts.n_ctx           number?  Context window. Default: auto-fit or 4096.
+---   opts.n_seq_max       number?  Max parallel sessions. Default: 1.
+---   opts.system          string?  Default system prompt (prefix cache).
+---   opts.sampler         string?  Sampler profile: "balanced" (default), "precise",
+---                                 "creative", "code", "fast", "thinking", "extended".
+---                                 "extended" uses CSampler with DRY, XTC, mirostat.
+---   opts.max_tokens      number?  Default max tokens. Default: 2048.
+---   opts.think           bool?    Strip <think> blocks. Default: false.
+---   opts.think_budget    number?  Hard limit on tokens inside <think> (via native
+---                                 reasoning_budget sampler). Default: nil.
+---   opts.kv_type         string?  KV quantization: "f16" (default), "q8_0", "q4_0".
+---   opts.kv_type_k       string?  K cache type independently.
+---   opts.kv_type_v       string?  V cache type independently.
+---   opts.n_sink          number?  Attention sink size. Default: 4.
+---   opts.eviction        string?  "message" (default) or "fifo".
+---   opts.headroom        number?  Override KV headroom reserved for generation.
+---   opts.log_level       number?  0 = silent (default).
+---   opts.speculative     string?  Speculative decoding type: "ngram_cache" (default
+---                                 when enabled), "ngram_simple", "ngram_map_k".
+---                                 Set to false/nil to disable. Enabled when this
+---                                 field is a non-false string.
+---   opts.n_draft         number?  Max draft tokens per speculative step. Default: 5.
+---   -- Extended sampler params (used when sampler = "extended" or set explicitly):
+---   opts.temp            number?  Temperature (default: 0.8).
+---   opts.top_k           number?  Top-K (default: 40).
+---   opts.top_p           number?  Top-P (default: 0.95).
+---   opts.min_p           number?  Min-P (default: 0.05).
+---   opts.repeat_penalty  number?  Repetition penalty (default: 1.05 for extended).
+---   opts.repeat_last_n   number?  Penalty window (default: 64).
+---   opts.dry_mult        number?  DRY multiplier (default: 0.8 for extended, 0=off).
+---   opts.dry_base        number?  DRY base (default: 1.75).
+---   opts.dry_allowed_len number?  DRY min sequence length (default: 2).
+---   opts.xtc_probability number?  XTC fire probability (default: 0.1 for extended, 0=off).
+---   opts.xtc_threshold   number?  XTC logit threshold (default: 0.1).
+---   opts.mirostat        number?  0=off, 1=v1, 2=v2 (default: 0).
+---   opts.mirostat_tau    number?  Mirostat target entropy (default: 5.0).
+---   opts.mirostat_eta    number?  Mirostat learning rate (default: 0.1).
+---   opts.logit_bias      table?   { [token_id] = delta_logit, ... }
 --- @return llm
 function llm.init(opts)
     assert(type(opts) == "table" and type(opts.model) == "string",
@@ -73,14 +97,105 @@ function llm.init(opts)
     })
     if opts.system then cm:set_system(opts.system) end
 
-    local profile = opts.sampler or "balanced"
-    local sampler = type(profile) == "string" and llm.sampler[profile](vocab) or profile
+    -- ── Sampler construction ──────────────────────────────────────────────────
+    -- "extended" profile or explicit advanced params → CSampler (DRY, XTC, mirostat).
+    -- All other named profiles → classic Sampler.chain().
+    -- Pre-built sampler passed directly → used as-is.
+
+    local sampler
+    local native_budget = false
+
+    -- Detect whether any advanced CSampler param is explicitly set
+    local use_extended = (opts.sampler == "extended")
+        or opts.dry_mult ~= nil
+        or opts.xtc_probability ~= nil
+        or opts.mirostat ~= nil
+        or opts.logit_bias ~= nil
+
+    if type(opts.sampler) == "table" then
+        -- Pre-built Sampler or CSampler passed directly
+        sampler = opts.sampler
+
+    elseif use_extended then
+        -- CSampler path — supports DRY, XTC, mirostat, logit_bias
+        local sampler_opts = {
+            temp            = opts.temp or opts.temperature or 0.8,
+            top_k           = opts.top_k           or 40,
+            top_p           = opts.top_p           or 0.95,
+            min_p           = opts.min_p           or 0.05,
+            repeat_penalty  = opts.repeat_penalty  or 1.05,
+            freq_penalty    = opts.freq_penalty    or 0.0,
+            pres_penalty    = opts.pres_penalty    or 0.0,
+            repeat_last_n   = opts.repeat_last_n   or 64,
+            dry_mult        = opts.dry_mult        or 0.8,
+            dry_base        = opts.dry_base        or 1.75,
+            dry_allowed_len = opts.dry_allowed_len or 2,
+            dry_last_n      = opts.dry_last_n      or -1,
+            xtc_probability = opts.xtc_probability or 0.1,
+            xtc_threshold   = opts.xtc_threshold   or 0.1,
+            mirostat        = opts.mirostat        or 0,
+            mirostat_tau    = opts.mirostat_tau    or 5.0,
+            mirostat_eta    = opts.mirostat_eta    or 0.1,
+            logit_bias      = opts.logit_bias,
+        }
+        sampler = ion7.Sampler.common(model, sampler_opts)
+
+    else
+        -- Classic Sampler.chain() path via named profiles
+        local profile = opts.sampler or "balanced"
+        sampler = llm.sampler[profile](vocab)
+    end
+
+    -- Native reasoning budget: add ion7_reasoning_budget_init() to a chain
+    -- wrapping the existing sampler. Only for non-CSampler paths and when budget > 0.
+    -- CSampler doesn't support reasoning_budget insertion post-construction,
+    -- so it falls back to the Lua soft-limit in generator.lua.
+    if opts.think_budget and opts.think_budget > 0 and not use_extended
+    and type(opts.sampler) ~= "table" then
+        -- Build a new chain: reasoning_budget first, then the existing sampler steps
+        -- Re-build with reasoning_budget prepended via a fresh chain
+        local s = opts  -- alias for sampler opts
+        local chain = ion7.Sampler.chain()
+            :reasoning_budget(model, opts.think_budget)
+            :top_k(s.top_k or 40)
+            :top_p(s.top_p or 0.95, 1)
+            :min_p(s.min_p or 0.05, 1)
+            :temperature(s.temp or s.temperature or 0.8)
+            :dist()
+            :build(vocab)
+        sampler = chain
+        native_budget = true
+    end
+
+    -- ── Speculative decoding ─────────────────────────────────────────────────
+    -- Enabled when opts.speculative is a string (type name) or true (→ ngram_cache).
+    -- Disabled when opts.speculative is nil/false.
+    -- Not compatible with grammar samplers (grammar constrains every logit position;
+    -- speculative batch decoding would require grammar state at each draft position).
+    local spec_engine = nil
+    if opts.speculative and opts.speculative ~= false then
+        local Speculative = ion7.Speculative
+        local spec_type   = type(opts.speculative) == "string"
+                            and opts.speculative
+                            or  "ngram_cache"
+        local ok, s = pcall(Speculative.new, Speculative, ctx, nil, {
+            type    = spec_type,
+            n_draft = opts.n_draft or 5,
+        })
+        if ok then
+            spec_engine = s
+        else
+            io.stderr:write("[ion7.llm] speculative init failed: " .. tostring(s) .. "\n")
+        end
+    end
 
     local gen = llm.Generator.new(ctx, vocab, cm, {
-        sampler      = sampler,
-        max_tokens   = opts.max_tokens or 2048,
-        think        = opts.think or false,
-        think_budget = opts.think_budget,
+        sampler        = sampler,
+        max_tokens     = opts.max_tokens or 2048,
+        think          = opts.think or false,
+        think_budget   = opts.think_budget,
+        native_budget  = native_budget,
+        speculative    = spec_engine,
     })
 
     _state = { ion7 = ion7, model = model, vocab = vocab, ctx = ctx, cm = cm, gen = gen, opts = opts }

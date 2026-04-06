@@ -1,13 +1,32 @@
 --- @module ion7.llm.generator
 --- SPDX-License-Identifier: MIT
---- Generation loop: coroutine streaming, grammar constraints, KV rollback.
+--- Generation loop: coroutine streaming, grammar constraints, KV rollback,
+--- optional speculative decoding.
 ---
---- llama_sampler_sample() on a chain calls llama_sampler_accept() internally.
---- Never call sampler:accept() explicitly in the loop - double-accept crashes
---- the grammar sampler.
+--- Sampler compatibility:
+---   - Sampler.chain() (llama_sampler_chain): sample() auto-accepts internally.
+---     Never call accept() manually — double-accept crashes grammar samplers.
+---   - CSampler (ion7_csampler_t): sample() also auto-accepts in the Lua wrapper.
+---     Both types are drop-in compatible in the generation loop.
+---
+--- Grammar caching:
+---   Grammar samplers are expensive to build (GBNF parsing + automaton).
+---   Generator caches the last grammar sampler by GBNF string and reuses it
+---   across calls. The sampler is reset() before each use to clear grammar state.
+---
+--- Native think budget:
+---   When _native_budget = true, ion7_reasoning_budget_init() is already in the
+---   sampler chain and enforces the hard token limit inside <think> blocks.
+---   The Lua token counter is skipped; think-block stripping still runs normally.
+---
+--- Speculative decoding (ngram_cache):
+---   When a Speculative engine is set (_spec != nil), the generation loop uses
+---   batch decoding to draft-and-verify multiple tokens per step via n-gram
+---   prediction. Acceptance rate varies by content (~1.3–2x speedup typical).
+---   The think-block and stop-string logic applies uniformly to all emitted tokens.
 ---
 --- @author Ion7-Labs
---- @version 0.1.0
+--- @version 0.3.0
 
 local Stop     = require "ion7.llm.stop"
 local Response = require "ion7.llm.response"
@@ -19,13 +38,15 @@ Generator.__index = Generator
 --- @param  vocab  Vocab
 --- @param  cm     ContextManager
 --- @param  opts   table?
----   opts.sampler       cdata?   Pre-built Sampler.
----   opts.sampler_opts  table?   { temp, top_k, top_p, min_p, seed }
----   opts.grammar       table?   Default Grammar_obj or GBNF string.
----   opts.max_tokens    number?  Default: 2048.
----   opts.stop          table?   Extra stop strings.
----   opts.think         bool?    Strip <think> blocks. Default: false.
----   opts.think_budget  number?  Max tokens inside a <think> block. Default: nil.
+---   opts.sampler        table?   Pre-built Sampler or CSampler.
+---   opts.sampler_opts   table?   { temp, top_k, top_p, min_p, seed } for fallback chain.
+---   opts.grammar        table?   Default Grammar_obj or GBNF string.
+---   opts.max_tokens     number?  Default: 2048.
+---   opts.stop           table?   Extra stop strings.
+---   opts.think          bool?    Strip <think> blocks. Default: false.
+---   opts.think_budget   number?  Max tokens inside a <think> block. Default: nil.
+---   opts.native_budget  bool?    True when reasoning_budget sampler is in the chain.
+---   opts.speculative    table?   Speculative instance (ion7.core.Speculative).
 --- @return Generator
 function Generator.new(ctx, vocab, cm, opts)
     assert(ctx,   "[ion7.llm.generator] ctx required")
@@ -60,13 +81,22 @@ function Generator.new(ctx, vocab, cm, opts)
         _max_tokens      = opts.max_tokens or 2048,
         _think           = opts.think or false,
         _think_budget    = opts.think_budget or nil,
+        -- True when ion7_reasoning_budget_init() is already in the sampler chain.
+        -- Skips the Lua token counter; think-block stripping still runs normally.
+        _native_budget   = opts.native_budget or false,
+        _spec            = opts.speculative or nil,
         _checkpoint      = nil,
+        -- Grammar sampler cache: { gbnf = string, sampler = Sampler }
+        -- Avoids rebuilding the GBNF automaton on every call.
+        _grammar_cache   = nil,
     }, Generator)
 end
 
 -- ── Grammar sampler ───────────────────────────────────────────────────────────
 
 -- Grammar samplers must be first in the chain (they mask logits before sampling).
+-- Returns the cached sampler if the GBNF string is unchanged; builds a new one
+-- otherwise. The sampler is reset() by the caller before use.
 function Generator:_grammar_sampler(grammar)
     local ion7_core = require "ion7.core"
     local s = self._sampler_opts
@@ -81,7 +111,13 @@ function Generator:_grammar_sampler(grammar)
               .. type(grammar))
     end
 
-    return ion7_core.Sampler.chain()
+    -- Cache hit: same grammar, reuse sampler
+    if self._grammar_cache and self._grammar_cache.gbnf == gbnf then
+        return self._grammar_cache.sampler
+    end
+
+    -- Cache miss: build new grammar sampler chain
+    local new_sampler = ion7_core.Sampler.chain()
         :grammar(gbnf, "root", self._vocab)
         :top_k(s.top_k or 40)
         :top_p(s.top_p or 0.95, 1)
@@ -89,6 +125,9 @@ function Generator:_grammar_sampler(grammar)
         :temperature(s.temp or s.temperature or 0.8)
         :dist(s.seed or 0xFFFFFFFF)
         :build(self._vocab)
+
+    self._grammar_cache = { gbnf = gbnf, sampler = new_sampler }
+    return new_sampler
 end
 
 -- ── KV checkpoint / rollback ──────────────────────────────────────────────────
@@ -120,27 +159,29 @@ end
 --- @param  session  Session
 --- @param  opts     table?
 ---   opts.max_tokens   number?       Override max tokens.
----   opts.sampler      cdata?        Override sampler.
+---   opts.sampler      table?        Override sampler (Sampler or CSampler).
 ---   opts.grammar      table|string? Override grammar.
----   opts.think_budget number?       Override think_budget.
 --- @return function  iterator
 function Generator:stream(session, opts)
     opts = opts or {}
-    local ctx          = self._ctx
-    local vocab        = self._vocab
-    local cm           = self._cm
-    local stop         = self._stop
-    local max_tok      = opts.max_tokens or self._max_tokens
-    local think_budget = opts.think_budget or self._think_budget
+    local ctx     = self._ctx
+    local vocab   = self._vocab
+    local cm      = self._cm
+    local stop    = self._stop
+    local max_tok = opts.max_tokens or self._max_tokens
+    local spec    = self._spec
+
+    -- think_budget: Lua soft limit only when NOT using native reasoning_budget sampler
+    local think_budget = (not self._native_budget)
+                         and (opts.think_budget or self._think_budget)
+                         or  nil
 
     -- Priority: opts.sampler > grammar > default sampler
     local sampler
-    local grammar_sampler_built = false
     if opts.sampler then
         sampler = opts.sampler
     elseif opts.grammar or self._default_grammar then
         sampler = self:_grammar_sampler(opts.grammar or self._default_grammar)
-        grammar_sampler_built = true
     else
         sampler = self._sampler
     end
@@ -151,18 +192,75 @@ function Generator:stream(session, opts)
         sampler:reset()
         ctx:perf_reset()
 
-        local token_ids  = {}
-        local text_parts = {}
+        -- ── Generation state ─────────────────────────────────────────────────
+        local token_ids   = {}
+        local text_parts  = {}
         local stop_reason = "length"
 
-        -- Think block state. Tail buffers avoid O(n) table.concat per token.
+        -- Think-block state (tail buffers avoid O(n) concat per token)
         local in_think    = false
-        local all_think   = {}   -- accumulated think text
+        local all_think   = {}
         local think_tail  = ""   -- last 7 chars for </think> detection
         local open_tail   = ""   -- last 6 chars for <think> detection
-        local think_tok_n = 0
+        local think_tok_n = 0    -- Lua soft budget counter
 
-        for _ = 1, max_tok do
+        -- Generated token history for speculative n-gram lookup
+        local gen_ids = {}
+
+        -- ── Per-token emit (think/stop/yield pipeline) ────────────────────────
+        -- Returns true when a stop_string matched (caller must break).
+        -- Closes over all state variables above.
+        local function emit(tok)
+            local piece = vocab:piece(tok)
+
+            if self._think then
+                if not in_think then
+                    local check = open_tail .. piece
+                    open_tail = check:sub(-6)
+                    if check:find("<think>", 1, true) then
+                        in_think    = true
+                        think_tail  = ""
+                        think_tok_n = 0
+                        text_parts[#text_parts + 1] = piece
+                        return false   -- suppress yield, skip stop check
+                    end
+                else
+                    think_tok_n = think_tok_n + 1
+                    all_think[#all_think + 1] = piece
+
+                    local check = think_tail .. piece
+                    think_tail  = check:sub(-7)
+
+                    if check:find("</think>", 1, true) then
+                        in_think    = false
+                        think_tail  = ""
+                        think_tok_n = 0
+                    elseif think_budget and think_tok_n >= think_budget then
+                        -- Lua soft budget exceeded
+                        in_think    = false
+                        think_tail  = ""
+                        think_tok_n = 0
+                        text_parts[#text_parts + 1] = piece
+                        coroutine.yield(piece)
+                        return stop:feed(piece)
+                    end
+                    text_parts[#text_parts + 1] = piece
+                    return false   -- still inside think, suppress yield
+                end
+            end
+
+            text_parts[#text_parts + 1] = piece
+            coroutine.yield(piece)
+            return stop:feed(piece)
+        end
+
+        -- ── Speculative init ──────────────────────────────────────────────────
+        if spec then spec:begin(gen_ids) end
+
+        -- ── Main generation loop ──────────────────────────────────────────────
+        local tok_n = 0  -- total tokens committed (for max_tok budget)
+
+        while tok_n < max_tok do
             if ctx._n_past >= ctx:n_ctx_seq() - 1 then
                 stop_reason = "length"
                 break
@@ -175,59 +273,106 @@ function Generator:stream(session, opts)
                 break
             end
 
-            ctx:decode_single(tok, 0)
-            token_ids[#token_ids + 1] = tok
+            if spec then
+                -- ── SPECULATIVE PATH ─────────────────────────────────────────
+                local n_past_before = ctx._n_past
+                local drafts        = spec:draft(gen_ids, tok)
+                local n_draft       = #drafts
 
-            local piece = vocab:piece(tok)
+                if n_draft > 0 then
+                    -- Batch decode: [tok, d1, d2, ..., dk]
+                    local batch = { tok }
+                    for _, d in ipairs(drafts) do batch[#batch + 1] = d end
+                    ctx:decode_multi(batch, 0)
 
-            if self._think then
-                if not in_think then
-                    local check = open_tail .. piece
-                    open_tail = check:sub(-6)
-                    if check:find("<think>", 1, true) then
-                        in_think    = true
-                        think_tail  = ""
-                        think_tok_n = 0
-                        text_parts[#text_parts + 1] = piece
-                        goto continue
+                    -- Commit tok (already verified by the outer sampler:sample)
+                    tok_n = tok_n + 1
+                    token_ids[#token_ids + 1] = tok
+                    gen_ids[#gen_ids + 1]     = tok
+                    if emit(tok) then stop_reason = "stop_string"; break end
+
+                    -- Verify draft tokens
+                    local n_acc      = 0
+                    local early_stop = false
+
+                    for i, d_tok in ipairs(drafts) do
+                        if tok_n >= max_tok then break end
+
+                        -- Sample at batch position i (logits for position after d[i-1])
+                        -- This auto-accepts the chosen token in sampler history.
+                        local v = sampler:sample(ctx:ptr(), i)
+
+                        if v == d_tok and not vocab:is_eog(v) then
+                            -- Draft accepted: free token
+                            n_acc = n_acc + 1
+                            tok_n = tok_n + 1
+                            token_ids[#token_ids + 1] = v
+                            gen_ids[#gen_ids + 1]     = v
+                            if emit(v) then
+                                stop_reason = "stop_string"
+                                early_stop  = true
+                                -- Rollback any remaining undecoded drafts
+                                local tail = n_draft - n_acc
+                                if tail > 0 then
+                                    ctx:kv_seq_rm(0,
+                                        n_past_before + n_acc + 1,
+                                        n_past_before + n_draft + 1)
+                                    ctx._n_past = n_past_before + n_acc + 1
+                                end
+                                break
+                            end
+                        else
+                            -- Mismatch: v is the correction token.
+                            -- Remove the wrongly-decoded excess draft positions.
+                            local excess = n_draft - n_acc
+                            if excess > 0 then
+                                ctx:kv_seq_rm(0,
+                                    n_past_before + n_acc + 1,
+                                    n_past_before + n_draft + 1)
+                                ctx._n_past = n_past_before + n_acc + 1
+                            end
+
+                            if vocab:is_eog(v) then
+                                stop_reason = "stop"
+                                early_stop  = true
+                            else
+                                tok_n = tok_n + 1
+                                token_ids[#token_ids + 1] = v
+                                gen_ids[#gen_ids + 1]     = v
+                                -- Decode correction to set logits for next iteration.
+                                ctx:decode_single(v, 0)
+                                if emit(v) then
+                                    stop_reason = "stop_string"
+                                    early_stop  = true
+                                end
+                            end
+                            break  -- end verification loop regardless
+                        end
                     end
+
+                    spec:accept(n_acc)
+                    if early_stop then break end
+                    -- All drafts accepted: logits[-1] = after last draft token.
+                    -- Next sampler:sample(ctx, -1) reads those logits correctly. ✓
                 else
-                    think_tok_n = think_tok_n + 1
-                    all_think[#all_think + 1] = piece
-
-                    local check = think_tail .. piece
-                    think_tail = check:sub(-7)
-
-                    if check:find("</think>", 1, true) then
-                        in_think    = false
-                        think_tail  = ""
-                        think_tok_n = 0
-                    elseif think_budget and think_tok_n >= think_budget then
-                        in_think    = false
-                        think_tail  = ""
-                        think_tok_n = 0
-                        text_parts[#text_parts + 1] = piece
-                        coroutine.yield(piece)
-                        goto stop_check
-                    end
-                    text_parts[#text_parts + 1] = piece
-                    goto continue
+                    -- No speculation available: standard single-token step.
+                    ctx:decode_single(tok, 0)
+                    tok_n = tok_n + 1
+                    token_ids[#token_ids + 1] = tok
+                    gen_ids[#gen_ids + 1]     = tok
+                    spec:accept(0)
+                    if emit(tok) then stop_reason = "stop_string"; break end
                 end
+            else
+                -- ── STANDARD PATH (no speculation) ───────────────────────────
+                ctx:decode_single(tok, 0)
+                tok_n = tok_n + 1
+                token_ids[#token_ids + 1] = tok
+                if emit(tok) then stop_reason = "stop_string"; break end
             end
-
-            text_parts[#text_parts + 1] = piece
-            coroutine.yield(piece)
-
-            ::stop_check::
-            local matched = stop:feed(piece)
-            if matched then
-                stop_reason = "stop_string"
-                break
-            end
-
-            ::continue::
         end
 
+        -- ── Build full_text (strip think blocks if requested) ─────────────────
         local full_text
         if self._think then
             local raw = table.concat(text_parts)
@@ -245,7 +390,7 @@ function Generator:stream(session, opts)
             n_p_eval  = perf_data.n_p_eval,
         }, (#all_think > 0) and table.concat(all_think) or nil)
 
-        if grammar_sampler_built then sampler:free() end
+        -- Grammar sampler is cached — do NOT free it here.
 
         local snap = ctx:snapshot()
         session:_save_snapshot(snap, ctx._n_past)
@@ -274,6 +419,23 @@ function Generator:complete(prompt, opts)
     local session = Session.new()
     session:add("user", prompt)
     return self:chat(session, opts)
+end
+
+--- Attach or replace the speculative engine.
+--- Pass nil to disable speculation.
+--- @param  spec  table?  Speculative instance (ion7.core.Speculative).
+--- @return Generator  self
+function Generator:set_speculative(spec)
+    self._spec = spec
+    return self
+end
+
+--- Free cached grammar sampler explicitly (optional — GC handles it otherwise).
+function Generator:close()
+    if self._grammar_cache then
+        self._grammar_cache.sampler:free()
+        self._grammar_cache = nil
+    end
 end
 
 return Generator
