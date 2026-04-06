@@ -98,17 +98,6 @@ end
 
 -- ── Hooks ─────────────────────────────────────────────────────────────────────
 
---- Install a named hook.
----
---- "before_encode"  fn(messages, session) -> messages?
----   Called before tokenizing messages. Return modified array or nil.
----
---- "on_evict"  fn(evicted_messages, session) -> messages?
----   Called when messages are dropped due to overflow. Return replacement
----   messages (e.g. summary) or nil to drop silently.
----
---- @param  name  string
---- @param  fn    function
 --- Build a prompt string from messages, appending an empty think block when
 --- no_think=true. This is the llama.cpp equivalent of enable_thinking=False:
 --- the Qwen3/3.5 Jinja template adds <think>\n\n</think>\n to the generation
@@ -124,6 +113,17 @@ function ContextManager:_prompt(msgs, add_ass)
     return p
 end
 
+--- Install a named hook.
+---
+--- "before_encode"  fn(messages, session) -> messages?
+---   Called before tokenizing messages. Return modified array or nil.
+---
+--- "on_evict"  fn(evicted_messages, session) -> messages?
+---   Called when messages are dropped due to overflow. Return replacement
+---   messages (e.g. summary) or nil to drop silently.
+---
+--- @param  name  string
+--- @param  fn    function
 function ContextManager:set_hook(name, fn)
     assert(type(name) == "string",   "[ion7.llm.context_manager] hook name must be a string")
     assert(type(fn)   == "function", "[ion7.llm.context_manager] hook must be a function")
