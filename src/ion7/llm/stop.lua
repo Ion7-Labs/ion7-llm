@@ -1,5 +1,5 @@
 --- @module ion7.llm.stop
---- SPDX-License-Identifier: AGPL-3.0-or-later
+--- SPDX-License-Identifier: MIT
 --- Multi-token stop string detection via rolling buffer.
 ---
 --- Stop strings often span multiple tokens ("<|im_end|>" -> ["<|", "im", "_end", "|>"]).

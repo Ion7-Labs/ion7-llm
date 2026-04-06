@@ -1,5 +1,5 @@
 --- @module ion7.llm.generator
---- SPDX-License-Identifier: AGPL-3.0-or-later
+--- SPDX-License-Identifier: MIT
 --- Generation loop: coroutine streaming, grammar constraints, KV rollback.
 ---
 --- llama_sampler_sample() on a chain calls llama_sampler_accept() internally.

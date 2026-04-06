@@ -1,5 +1,5 @@
 --- @module ion7.llm.context_manager
---- SPDX-License-Identifier: AGPL-3.0-or-later
+--- SPDX-License-Identifier: MIT
 --- KV cache orchestration: prefix cache, session slots, overflow handling, hooks.
 ---
 --- Features:

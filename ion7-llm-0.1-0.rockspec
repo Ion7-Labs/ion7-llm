@@ -15,7 +15,7 @@ description = {
         multi-session Scheduler, reasoning model support.
     ]],
     homepage = "https://github.com/Ion7-Labs/ion7-llm",
-    license  = "AGPL-3.0-or-later",
+    license  = "MIT-or-later",
 }
 
 dependencies = {

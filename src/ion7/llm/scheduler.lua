@@ -1,5 +1,5 @@
 --- @module ion7.llm.scheduler
---- SPDX-License-Identifier: AGPL-3.0-or-later
+--- SPDX-License-Identifier: MIT
 --- True parallel generation via llama.cpp multi-sequence batch API.
 ---
 --- Each step: 1 token per active session packed into a single llama_decode() call.

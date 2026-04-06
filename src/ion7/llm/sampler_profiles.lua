@@ -1,5 +1,5 @@
 --- @module ion7.llm.sampler_profiles
---- SPDX-License-Identifier: AGPL-3.0-or-later
+--- SPDX-License-Identifier: MIT
 --- Named sampler presets. All return a built ion7-core Sampler.
 ---
 --- @author Ion7-Labs

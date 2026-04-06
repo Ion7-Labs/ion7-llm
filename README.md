@@ -1,6 +1,6 @@
 # ion7-llm
 
-[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![LuaJIT](https://img.shields.io/badge/LuaJIT-2.1-orange.svg)](https://luajit.org/)
 [![ion7-core](https://img.shields.io/badge/ion7--core-1.0-brightgreen.svg)](https://github.com/Ion7-Labs/ion7-core)
 
@@ -279,16 +279,6 @@ The following techniques require llama.cpp to expose attention matrices or other
 
 ---
 
-## 📄 Licensing
+## Licensing
 
-ion7-llm is dual-licensed.
-
-### Open Source - AGPLv3
-
-Free to use under the [GNU Affero General Public License v3](LICENSE).
-
-### Commercial License
-
-For proprietary or closed-source use without AGPLv3 obligations.
-
-**-> [Contact for commercial licensing](mailto:5inq@kiji.dev)**
+MIT License — free to use in any project, open source or commercial.

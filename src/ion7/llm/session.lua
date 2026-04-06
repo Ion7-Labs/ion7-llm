@@ -1,5 +1,5 @@
 --- @module ion7.llm.session
---- SPDX-License-Identifier: AGPL-3.0-or-later
+--- SPDX-License-Identifier: MIT
 --- Conversation state: message history, KV position, snapshot.
 ---
 --- @author Ion7-Labs

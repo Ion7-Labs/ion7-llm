@@ -1,5 +1,5 @@
 --- @module ion7.llm
---- SPDX-License-Identifier: AGPL-3.0-or-later
+--- SPDX-License-Identifier: MIT
 --- High-level LLM pipeline for LuaJIT. Built on ion7-core / llama.cpp.
 ---
 --- @author Ion7-Labs
