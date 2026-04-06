@@ -46,10 +46,9 @@ function ContextManager.new(ctx, vocab, opts)
         _eviction         = opts.eviction or "message",
         _n_evictions      = 0,
         _n_tokens_evicted = 0,
-        -- When true, append an empty <think>\n\n</think>\n block to the generation
-        -- prefix. This is the llama.cpp-compatible equivalent of enable_thinking=False
-        -- from Qwen3/3.5's Jinja template: the model starts generating *after* the
-        -- think block, consuming zero thinking tokens.
+        -- When true, passes enable_thinking=0 to apply_template, which lets the
+        -- model's Jinja2 template disable thinking natively (Qwen3/3.5, DeepSeek-R1).
+        -- Maps to -1 (model default) when false.
         _no_think         = opts.no_think or false,
     }, ContextManager)
 end
@@ -98,19 +97,14 @@ end
 
 -- ── Hooks ─────────────────────────────────────────────────────────────────────
 
---- Build a prompt string from messages, appending an empty think block when
---- no_think=true. This is the llama.cpp equivalent of enable_thinking=False:
---- the Qwen3/3.5 Jinja template adds <think>\n\n</think>\n to the generation
---- prefix so the model starts responding immediately with zero thinking tokens.
+--- Build a prompt string from messages.
+--- Passes enable_thinking to the Jinja2 template (0 = disable, -1 = model default).
 --- @param  msgs     table    Message array
 --- @param  add_ass  boolean  Add generation prompt
 --- @return string
 function ContextManager:_prompt(msgs, add_ass)
-    local p = self._vocab:apply_template(msgs, add_ass)
-    if add_ass and self._no_think then
-        p = p .. "<think>\n\n</think>\n"
-    end
-    return p
+    local et = (add_ass and self._no_think) and 0 or -1
+    return self._vocab:apply_template(msgs, add_ass, et)
 end
 
 --- Install a named hook.
@@ -340,7 +334,7 @@ function ContextManager:prepare(session)
                     for _, m in ipairs(replacement) do new_msgs[#new_msgs + 1] = m end
                     for _, m in ipairs(msgs)        do new_msgs[#new_msgs + 1] = m end
                     local new_tokens, new_n = vocab:tokenize(
-                        vocab:apply_template(new_msgs, true), false, true)
+                        self:_prompt(new_msgs, true), false, true)
                     if new_n <= available then
                         msgs, tokens, n = new_msgs, new_tokens, new_n
                     end
