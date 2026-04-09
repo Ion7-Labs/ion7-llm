@@ -75,16 +75,16 @@ end
 --- @param  model  Model   ion7-core Model object.
 --- @param  opts   table?  Overrides (see Sampler.common() for all options).
 ---   Notable opts:
----     dry_mult        (default 0.8)   — DRY multiplier, 0 = disabled
+---     dry_mult        (default 0.8)   - DRY multiplier, 0 = disabled
 ---     dry_base        (default 1.75)
----     xtc_probability (default 0.1)   — 0 = disabled
+---     xtc_probability (default 0.1)   - 0 = disabled
 ---     xtc_threshold   (default 0.1)
----     mirostat        (default 0)     — 0 = off, 1 = v1, 2 = v2
+---     mirostat        (default 0)     - 0 = off, 1 = v1, 2 = v2
 ---     mirostat_tau    (default 5.0)
 ---     temp            (default 0.8)
 ---     top_k           (default 40)
 ---     top_p           (default 0.95)
----     logit_bias      (default nil)   — { [tok_id] = delta }
+---     logit_bias      (default nil)   - { [tok_id] = delta }
 --- @return CSampler
 function profiles.extended(model, opts)
     local Sampler = require("ion7.core").Sampler

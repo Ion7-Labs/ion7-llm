@@ -5,7 +5,7 @@
 ---
 --- Sampler compatibility:
 ---   - Sampler.chain() (llama_sampler_chain): sample() auto-accepts internally.
----     Never call accept() manually — double-accept crashes grammar samplers.
+---     Never call accept() manually - double-accept crashes grammar samplers.
 ---   - CSampler (ion7_csampler_t): sample() also auto-accepts in the Lua wrapper.
 ---     Both types are drop-in compatible in the generation loop.
 ---
@@ -390,7 +390,7 @@ function Generator:stream(session, opts)
             n_p_eval  = perf_data.n_p_eval,
         }, (#all_think > 0) and table.concat(all_think) or nil)
 
-        -- Grammar sampler is cached — do NOT free it here.
+        -- Grammar sampler is cached - do NOT free it here.
 
         local snap = ctx:snapshot()
         session:_save_snapshot(snap, ctx._n_past)
@@ -430,7 +430,7 @@ function Generator:set_speculative(spec)
     return self
 end
 
---- Free cached grammar sampler explicitly (optional — GC handles it otherwise).
+--- Free cached grammar sampler explicitly (optional - GC handles it otherwise).
 function Generator:close()
     if self._grammar_cache then
         self._grammar_cache.sampler:free()

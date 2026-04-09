@@ -117,7 +117,7 @@ function llm.init(opts)
         sampler = opts.sampler
 
     elseif use_extended then
-        -- CSampler path — supports DRY, XTC, mirostat, logit_bias
+        -- CSampler path - supports DRY, XTC, mirostat, logit_bias
         local sampler_opts = {
             temp            = opts.temp or opts.temperature or 0.8,
             top_k           = opts.top_k           or 40,
