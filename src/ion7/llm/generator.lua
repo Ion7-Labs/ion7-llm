@@ -19,11 +19,19 @@
 ---   sampler chain and enforces the hard token limit inside <think> blocks.
 ---   The Lua token counter is skipped; think-block stripping still runs normally.
 ---
---- Speculative decoding (ngram_cache):
+--- Speculative decoding:
 ---   When a Speculative engine is set (_spec != nil), the generation loop uses
 ---   batch decoding to draft-and-verify multiple tokens per step via n-gram
----   prediction. Acceptance rate varies by content (~1.3–2x speedup typical).
+---   prediction or draft-model heads. Acceptance rate varies by content.
 ---   The think-block and stop-string logic applies uniformly to all emitted tokens.
+---
+--- Entropy-adaptive speculation (_entropy_threshold):
+---   When set, ctx:entropy(0) is measured after each sample. If the model's
+---   distribution is uncertain (entropy > threshold), drafting is skipped for
+---   that step and normal single-token decoding runs instead.
+---   Low entropy (model confident) → drafts are accepted → speedup.
+---   High entropy (model uncertain) → drafts would be rejected → skip overhead.
+---   Typical range: 0.5–2.0 nats. Set via Generator:set_entropy_threshold().
 ---
 --- @author Ion7-Labs
 --- @version 0.3.0
@@ -46,7 +54,9 @@ Generator.__index = Generator
 ---   opts.think          bool?    Strip <think> blocks. Default: false.
 ---   opts.think_budget   number?  Max tokens inside a <think> block. Default: nil.
 ---   opts.native_budget  bool?    True when reasoning_budget sampler is in the chain.
----   opts.speculative    table?   Speculative instance (ion7.core.Speculative).
+---   opts.speculative        table?   Speculative instance (ion7.core.Speculative).
+---   opts.entropy_threshold  number?  Skip drafting when entropy > this value.
+---                                    nil = always speculate (default).
 --- @return Generator
 function Generator.new(ctx, vocab, cm, opts)
     assert(ctx,   "[ion7.llm.generator] ctx required")
@@ -83,9 +93,13 @@ function Generator.new(ctx, vocab, cm, opts)
         _think_budget    = opts.think_budget or nil,
         -- True when ion7_reasoning_budget_init() is already in the sampler chain.
         -- Skips the Lua token counter; think-block stripping still runs normally.
-        _native_budget   = opts.native_budget or false,
-        _spec            = opts.speculative or nil,
-        _checkpoint      = nil,
+        _native_budget      = opts.native_budget or false,
+        _spec               = opts.speculative or nil,
+        -- Entropy threshold for adaptive speculation. nil = always try to draft.
+        -- When set, ctx:entropy(0) is checked before each draft attempt.
+        -- If entropy > threshold, the speculative path is bypassed for that step.
+        _entropy_threshold  = opts.entropy_threshold or nil,
+        _checkpoint         = nil,
         -- Grammar sampler cache: { gbnf = string, sampler = Sampler }
         -- Avoids rebuilding the GBNF automaton on every call.
         _grammar_cache   = nil,
@@ -126,6 +140,7 @@ function Generator:_grammar_sampler(grammar)
         :dist(s.seed or 0xFFFFFFFF)
         :build(self._vocab)
 
+    if self._grammar_cache then self._grammar_cache.sampler:free() end
     self._grammar_cache = { gbnf = gbnf, sampler = new_sampler }
     return new_sampler
 end
@@ -136,7 +151,7 @@ end
 --- @return Generator  self
 function Generator:checkpoint()
     local ctx = self._ctx
-    self._checkpoint = { snap = ctx:snapshot(), n_past = ctx._n_past }
+    self._checkpoint = { snap = ctx:snapshot(), n_past = ctx:n_past() }
     return self
 end
 
@@ -147,7 +162,7 @@ function Generator:rollback()
         "[ion7.llm.generator] no checkpoint saved - call checkpoint() first")
     local ctx = self._ctx
     ctx:restore(self._checkpoint.snap)
-    ctx._n_past = self._checkpoint.n_past
+    ctx:set_n_past(self._checkpoint.n_past)
     return self
 end
 
@@ -161,6 +176,8 @@ end
 ---   opts.max_tokens   number?       Override max tokens.
 ---   opts.sampler      table?        Override sampler (Sampler or CSampler).
 ---   opts.grammar      table|string? Override grammar.
+---   opts.on_think     function?     Called with each piece inside <think> blocks.
+---                                   Only fires when think=true. Receives (piece).
 --- @return function  iterator
 function Generator:stream(session, opts)
     opts = opts or {}
@@ -168,8 +185,10 @@ function Generator:stream(session, opts)
     local vocab   = self._vocab
     local cm      = self._cm
     local stop    = self._stop
-    local max_tok = opts.max_tokens or self._max_tokens
-    local spec    = self._spec
+    local max_tok           = opts.max_tokens or self._max_tokens
+    local spec              = self._spec
+    local entropy_threshold = self._entropy_threshold
+    local on_think          = opts.on_think  -- fn(piece) called for tokens inside <think>
 
     -- think_budget: Lua soft limit only when NOT using native reasoning_budget sampler
     local think_budget = (not self._native_budget)
@@ -227,6 +246,7 @@ function Generator:stream(session, opts)
                 else
                     think_tok_n = think_tok_n + 1
                     all_think[#all_think + 1] = piece
+                    if on_think then on_think(piece) end
 
                     local check = think_tail .. piece
                     think_tail  = check:sub(-7)
@@ -261,7 +281,7 @@ function Generator:stream(session, opts)
         local tok_n = 0  -- total tokens committed (for max_tok budget)
 
         while tok_n < max_tok do
-            if ctx._n_past >= ctx:n_ctx_seq() - 1 then
+            if ctx:n_past() >= ctx:n_ctx_seq() - 1 then
                 stop_reason = "length"
                 break
             end
@@ -273,9 +293,20 @@ function Generator:stream(session, opts)
                 break
             end
 
-            if spec then
+            -- Entropy-adaptive: skip speculative drafting when the model is
+            -- uncertain (high entropy). High entropy → drafts would be rejected
+            -- anyway, so avoid the overhead of batch decoding.
+            local do_spec = spec ~= nil
+            if do_spec and entropy_threshold then
+                local ent = ctx:entropy(0)
+                if ent > entropy_threshold then
+                    do_spec = false
+                end
+            end
+
+            if do_spec then
                 -- ── SPECULATIVE PATH ─────────────────────────────────────────
-                local n_past_before = ctx._n_past
+                local n_past_before = ctx:n_past()
                 local drafts        = spec:draft(gen_ids, tok)
                 local n_draft       = #drafts
 
@@ -317,7 +348,7 @@ function Generator:stream(session, opts)
                                     ctx:kv_seq_rm(0,
                                         n_past_before + n_acc + 1,
                                         n_past_before + n_draft + 1)
-                                    ctx._n_past = n_past_before + n_acc + 1
+                                    ctx:set_n_past(n_past_before + n_acc + 1)
                                 end
                                 break
                             end
@@ -329,7 +360,7 @@ function Generator:stream(session, opts)
                                 ctx:kv_seq_rm(0,
                                     n_past_before + n_acc + 1,
                                     n_past_before + n_draft + 1)
-                                ctx._n_past = n_past_before + n_acc + 1
+                                ctx:set_n_past(n_past_before + n_acc + 1)
                             end
 
                             if vocab:is_eog(v) then
@@ -364,10 +395,16 @@ function Generator:stream(session, opts)
                     if emit(tok) then stop_reason = "stop_string"; break end
                 end
             else
-                -- ── STANDARD PATH (no speculation) ───────────────────────────
+                -- ── STANDARD PATH (no speculation, or skipped by entropy gate) ─
                 ctx:decode_single(tok, 0)
                 tok_n = tok_n + 1
                 token_ids[#token_ids + 1] = tok
+                -- Keep spec engine's accept counter consistent when entropy gating
+                -- caused us to skip drafting (spec != nil but do_spec = false).
+                if spec then
+                    gen_ids[#gen_ids + 1] = tok
+                    spec:accept(0)
+                end
                 if emit(tok) then stop_reason = "stop_string"; break end
             end
         end
@@ -393,7 +430,7 @@ function Generator:stream(session, opts)
         -- Grammar sampler is cached - do NOT free it here.
 
         local snap = ctx:snapshot()
-        session:_save_snapshot(snap, ctx._n_past)
+        session:_save_snapshot(snap, ctx:n_past())
         session._last_resp = resp
     end)
 end
@@ -427,6 +464,25 @@ end
 --- @return Generator  self
 function Generator:set_speculative(spec)
     self._spec = spec
+    return self
+end
+
+--- Set entropy threshold for adaptive speculation.
+--- When ctx:entropy(0) exceeds this value after sampling, the speculative draft
+--- step is bypassed for that token — normal single-token decoding runs instead.
+---
+--- Rationale: high entropy = model uncertain = draft tokens unlikely to match =
+--- batch-decode overhead wasted. Skipping speculation at high-entropy positions
+--- preserves throughput gains where the model is actually confident.
+---
+--- Typical range: 0.5 nats (aggressive, only draft when very confident)
+---                2.0 nats (conservative, draft unless almost random).
+--- Pass nil to disable adaptive gating (always speculate when spec engine is set).
+---
+--- @param  threshold  number?
+--- @return Generator  self
+function Generator:set_entropy_threshold(threshold)
+    self._entropy_threshold = threshold
     return self
 end
 

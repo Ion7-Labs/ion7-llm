@@ -109,7 +109,7 @@ end
 function ContextManager:restore_prefix()
     if not self._prefix_snap then return false end
     self._ctx:restore(self._prefix_snap)
-    self._ctx._n_past = self._prefix_n
+    self._ctx:set_n_past(self._prefix_n)
     return true
 end
 
@@ -198,7 +198,7 @@ end
 function ContextManager:_evict(seq_id, overflow, session)
     local ctx        = self._ctx
     local keep_from  = self._prefix_n + self._n_sink
-    local movable    = ctx._n_past - keep_from
+    local movable    = ctx:n_past() - keep_from
     if movable <= 0 then return end
 
     if self._eviction == "message" and session and #session._msg_kv_ends > 0 then
@@ -222,7 +222,7 @@ function ContextManager:_evict(seq_id, overflow, session)
         if freed > 0 then
             ctx:kv_seq_rm(seq_id, keep_from, last_pos)
             ctx:kv_seq_shift(seq_id, -freed, last_pos, -1)
-            ctx._n_past = ctx._n_past - freed
+            ctx:set_n_past(ctx:n_past() - freed)
 
             local new_ends = {}
             for i = count + 1, #ends do new_ends[#new_ends + 1] = ends[i] - freed end
@@ -236,7 +236,7 @@ function ContextManager:_evict(seq_id, overflow, session)
         if shift > 0 then
             ctx:kv_seq_rm(seq_id, keep_from, keep_from + shift)
             ctx:kv_seq_shift(seq_id, -shift, keep_from + shift, -1)
-            ctx._n_past = ctx._n_past - shift
+            ctx:set_n_past(ctx:n_past() - shift)
 
             if session then
                 local new_ends = {}
@@ -272,7 +272,7 @@ function ContextManager:prepare(session)
     -- Fast path: clean snapshot, no new messages
     if session:has_snapshot() and not session._dirty then
         ctx:restore(session:snapshot())
-        ctx._n_past = session.n_past
+        ctx:set_n_past(session.n_past)
         return session.n_past
     end
 
@@ -281,14 +281,14 @@ function ContextManager:prepare(session)
         self:restore_prefix()
     else
         ctx:kv_clear()
-        ctx._n_past = 0
+        ctx:set_n_past(0)
     end
 
     local all_msgs = session:all_messages()
     if #all_msgs == 0 then
         local snap = ctx:snapshot()
-        session:_save_snapshot(snap, ctx._n_past)
-        return ctx._n_past
+        session:_save_snapshot(snap, ctx:n_past())
+        return ctx:n_past()
     end
 
     -- Strip system message already covered by prefix cache
@@ -300,8 +300,8 @@ function ContextManager:prepare(session)
 
     if #msgs == 0 then
         local snap = ctx:snapshot()
-        session:_save_snapshot(snap, ctx._n_past)
-        return ctx._n_past
+        session:_save_snapshot(snap, ctx:n_past())
+        return ctx:n_past()
     end
 
     -- before_encode hook (RAG / context injection)
@@ -312,8 +312,8 @@ function ContextManager:prepare(session)
     local n_ctx_eff  = ctx:n_ctx_seq()
 
     -- Overflow handling
-    if ctx._n_past + n > n_ctx_eff - self._headroom then
-        local overflow = (ctx._n_past + n) - (n_ctx_eff - self._headroom)
+    if ctx:n_past() + n > n_ctx_eff - self._headroom then
+        local overflow = (ctx:n_past() + n) - (n_ctx_eff - self._headroom)
         local seq_id   = session.seq_id or 0
 
         if ctx:kv_can_shift() then
@@ -324,14 +324,14 @@ function ContextManager:prepare(session)
                 self:restore_prefix()
             else
                 ctx:kv_clear()
-                ctx._n_past = 0
+                ctx:set_n_past(0)
             end
             session._msg_kv_ends = {}
         end
     end
 
     -- Post-reset trim: history may still exceed available space
-    local available = n_ctx_eff - self._headroom - ctx._n_past
+    local available = n_ctx_eff - self._headroom - ctx:n_past()
     if n > available then
         local n_before_trim = n
         local dropped = {}
@@ -374,19 +374,19 @@ function ContextManager:prepare(session)
     end
 
     -- Safety clamp against template token overhead
-    local actual_free = n_ctx_eff - ctx._n_past
+    local actual_free = n_ctx_eff - ctx:n_past()
     if n > actual_free then n = actual_free end
-    if n <= 0 then return ctx._n_past end
+    if n <= 0 then return ctx:n_past() end
 
-    ctx:decode(tokens, n, 0, ctx._n_past)
+    ctx:decode(tokens, n, 0, ctx:n_past())
 
     if #session._msg_kv_ends == 0 then
         session._msg_kv_ends = self:_compute_msg_positions(msgs, self._prefix_n)
     end
 
     local snap = ctx:snapshot()
-    session:_save_snapshot(snap, ctx._n_past)
-    return ctx._n_past
+    session:_save_snapshot(snap, ctx:n_past())
+    return ctx:n_past()
 end
 
 --- Free a session's KV slot. Call when the session is permanently closed.

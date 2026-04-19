@@ -2,11 +2,28 @@
 --- SPDX-License-Identifier: MIT
 --- High-level LLM pipeline for LuaJIT. Built on ion7-core / llama.cpp.
 ---
+--- Usage:
+---   local llm = require "ion7.llm"
+---   local engine = llm.new({ model = "/path/model.gguf", system = "..." })
+---
+---   -- One-shot
+---   local resp = engine:complete("What is LuaJIT?")
+---   print(resp.text)
+---
+---   -- Multi-turn
+---   local session = engine:session()
+---   session:add("user", "My name is Louis.")
+---   local r1 = engine:chat(session)
+---   session:add("assistant", r1.text)
+---   session:add("user", "What's my name?")
+---   local r2 = engine:chat(session)
+---
 --- @author Ion7-Labs
---- @version 0.1.0
+--- @version 0.3.0
 
-local llm = { _VERSION = "0.1.0" }
+local llm = { _VERSION = "0.2.0" }
 
+-- Sub-module exports (accessible for advanced / low-level use)
 llm.Session        = require "ion7.llm.session"
 llm.Generator      = require "ion7.llm.generator"
 llm.ContextManager = require "ion7.llm.context_manager"
@@ -15,53 +32,61 @@ llm.Stop           = require "ion7.llm.stop"
 llm.Response       = require "ion7.llm.response"
 llm.sampler        = require "ion7.llm.sampler_profiles"
 
-local _state = {}
+-- ── LLM ───────────────────────────────────────────────────────────────────────
 
---- Initialise ion7-llm. Must be called before anything else.
----
+--- @class LLM
+--- Full-lifecycle LLM engine. Multiple independent instances are supported.
+--- @field model   Model
+--- @field vocab   Vocab
+--- @field ctx     Context
+--- @field cm      ContextManager
+--- @field gen     Generator
+local LLM = {}
+LLM.__index = LLM
+
 --- @param  opts  table
 ---   opts.model           string   Path to .gguf file. Required.
 ---   opts.n_gpu_layers    number?  GPU offload layers. Default: auto-fit.
 ---   opts.n_ctx           number?  Context window. Default: auto-fit or 4096.
 ---   opts.n_seq_max       number?  Max parallel sessions. Default: 1.
 ---   opts.system          string?  Default system prompt (prefix cache).
----   opts.sampler         string?  Sampler profile: "balanced" (default), "precise",
+---   opts.sampler         string?  Profile: "balanced" (default), "precise",
 ---                                 "creative", "code", "fast", "thinking", "extended".
----                                 "extended" uses CSampler with DRY, XTC, mirostat.
 ---   opts.max_tokens      number?  Default max tokens. Default: 2048.
 ---   opts.think           bool?    Strip <think> blocks. Default: false.
----   opts.think_budget    number?  Hard limit on tokens inside <think> (via native
----                                 reasoning_budget sampler). Default: nil.
+---   opts.think_budget    number?  Hard limit on tokens inside <think>. Default: nil.
 ---   opts.kv_type         string?  KV quantization: "f16" (default), "q8_0", "q4_0".
 ---   opts.kv_type_k       string?  K cache type independently.
 ---   opts.kv_type_v       string?  V cache type independently.
----   opts.n_sink          number?  Attention sink size. Default: 4.
+---   opts.n_sink          number?  Attention sink tokens. Default: 4.
 ---   opts.eviction        string?  "message" (default) or "fifo".
----   opts.headroom        number?  Override KV headroom reserved for generation.
+---   opts.headroom        number?  KV headroom reserved for generation.
 ---   opts.log_level       number?  0 = silent (default).
----   opts.speculative     string?  Speculative decoding type: "ngram_cache" (default
----                                 when enabled), "ngram_simple", "ngram_map_k".
----                                 Set to false/nil to disable. Enabled when this
----                                 field is a non-false string.
----   opts.n_draft         number?  Max draft tokens per speculative step. Default: 5.
----   -- Extended sampler params (used when sampler = "extended" or set explicitly):
+---   opts.speculative      string?  "ngram_cache" | "ngram_simple" | "ngram_map_k" |
+---                                  "eagle3" | "draft" | false.
+---   opts.n_draft          number?  Max draft tokens per speculative step. Default: 5.
+---   opts.draft_model      string?  Path to draft .gguf (required when speculative="draft").
+---   opts.draft_n_gpu_layers number? GPU layers for draft model. Default: 0.
+---   opts.entropy_threshold number?  Entropy gate (nats): skip drafting when model uncertain.
+---                                   nil = always speculate. Typical range: 0.5–2.0.
+---   -- Extended sampler params (sampler="extended" or any of these set explicitly):
 ---   opts.temp            number?  Temperature (default: 0.8).
 ---   opts.top_k           number?  Top-K (default: 40).
 ---   opts.top_p           number?  Top-P (default: 0.95).
 ---   opts.min_p           number?  Min-P (default: 0.05).
 ---   opts.repeat_penalty  number?  Repetition penalty (default: 1.05 for extended).
 ---   opts.repeat_last_n   number?  Penalty window (default: 64).
----   opts.dry_mult        number?  DRY multiplier (default: 0.8 for extended, 0=off).
+---   opts.dry_mult        number?  DRY multiplier (default: 0.8 for extended).
 ---   opts.dry_base        number?  DRY base (default: 1.75).
 ---   opts.dry_allowed_len number?  DRY min sequence length (default: 2).
----   opts.xtc_probability number?  XTC fire probability (default: 0.1 for extended, 0=off).
----   opts.xtc_threshold   number?  XTC logit threshold (default: 0.1).
+---   opts.xtc_probability number?  XTC fire probability (default: 0.1 for extended).
+---   opts.xtc_threshold   number?  XTC threshold (default: 0.1).
 ---   opts.mirostat        number?  0=off, 1=v1, 2=v2 (default: 0).
----   opts.mirostat_tau    number?  Mirostat target entropy (default: 5.0).
----   opts.mirostat_eta    number?  Mirostat learning rate (default: 0.1).
+---   opts.mirostat_tau    number?  Target entropy (default: 5.0).
+---   opts.mirostat_eta    number?  Learning rate (default: 0.1).
 ---   opts.logit_bias      table?   { [token_id] = delta_logit, ... }
---- @return llm
-function llm.init(opts)
+--- @return LLM
+function LLM.new(opts)
     assert(type(opts) == "table" and type(opts.model) == "string",
         "[ion7.llm] opts.model (path to .gguf) is required")
 
@@ -77,8 +102,8 @@ function llm.init(opts)
     end
 
     local model = ion7.Model.load(opts.model, { n_gpu_layers = ngl })
-    local vocab = model:vocab()
-    local ctx   = model:context({
+    local vocab  = model:vocab()
+    local ctx    = model:context({
         n_ctx     = n_ctx,
         n_seq_max = opts.n_seq_max or 1,
         kv_type   = opts.kv_type,
@@ -93,19 +118,14 @@ function llm.init(opts)
         ),
         n_sink   = opts.n_sink,
         eviction = opts.eviction,
-        no_think = not (opts.think ~= false),  -- true when think=false
+        no_think = not (opts.think ~= false),
     })
     if opts.system then cm:set_system(opts.system) end
 
-    -- ── Sampler construction ──────────────────────────────────────────────────
-    -- "extended" profile or explicit advanced params → CSampler (DRY, XTC, mirostat).
-    -- All other named profiles → classic Sampler.chain().
-    -- Pre-built sampler passed directly → used as-is.
-
+    -- ── Sampler ───────────────────────────────────────────────────────────────
     local sampler
     local native_budget = false
 
-    -- Detect whether any advanced CSampler param is explicitly set
     local use_extended = (opts.sampler == "extended")
         or opts.dry_mult ~= nil
         or opts.xtc_probability ~= nil
@@ -113,12 +133,10 @@ function llm.init(opts)
         or opts.logit_bias ~= nil
 
     if type(opts.sampler) == "table" then
-        -- Pre-built Sampler or CSampler passed directly
         sampler = opts.sampler
 
     elseif use_extended then
-        -- CSampler path - supports DRY, XTC, mirostat, logit_bias
-        local sampler_opts = {
+        sampler = ion7.Sampler.common(model, {
             temp            = opts.temp or opts.temperature or 0.8,
             top_k           = opts.top_k           or 40,
             top_p           = opts.top_p           or 0.95,
@@ -137,48 +155,62 @@ function llm.init(opts)
             mirostat_tau    = opts.mirostat_tau    or 5.0,
             mirostat_eta    = opts.mirostat_eta    or 0.1,
             logit_bias      = opts.logit_bias,
-        }
-        sampler = ion7.Sampler.common(model, sampler_opts)
+        })
 
     else
-        -- Classic Sampler.chain() path via named profiles
-        local profile = opts.sampler or "balanced"
-        sampler = llm.sampler[profile](vocab)
+        sampler = llm.sampler[opts.sampler or "balanced"](vocab)
     end
 
-    -- Native reasoning budget: add ion7_reasoning_budget_init() to a chain
-    -- wrapping the existing sampler. Only for non-CSampler paths and when budget > 0.
-    -- CSampler doesn't support reasoning_budget insertion post-construction,
-    -- so it falls back to the Lua soft-limit in generator.lua.
     if opts.think_budget and opts.think_budget > 0 and not use_extended
     and type(opts.sampler) ~= "table" then
-        -- Build a new chain: reasoning_budget first, then the existing sampler steps
-        -- Re-build with reasoning_budget prepended via a fresh chain
-        local s = opts  -- alias for sampler opts
-        local chain = ion7.Sampler.chain()
+        sampler = ion7.Sampler.chain()
             :reasoning_budget(model, opts.think_budget)
-            :top_k(s.top_k or 40)
-            :top_p(s.top_p or 0.95, 1)
-            :min_p(s.min_p or 0.05, 1)
-            :temperature(s.temp or s.temperature or 0.8)
+            :top_k(opts.top_k or 40)
+            :top_p(opts.top_p or 0.95, 1)
+            :min_p(opts.min_p or 0.05, 1)
+            :temperature(opts.temp or opts.temperature or 0.8)
             :dist()
             :build(vocab)
-        sampler = chain
         native_budget = true
     end
 
-    -- ── Speculative decoding ─────────────────────────────────────────────────
-    -- Enabled when opts.speculative is a string (type name) or true (→ ngram_cache).
-    -- Disabled when opts.speculative is nil/false.
-    -- Not compatible with grammar samplers (grammar constrains every logit position;
-    -- speculative batch decoding would require grammar state at each draft position).
-    local spec_engine = nil
+    -- ── Speculative ───────────────────────────────────────────────────────────
+    local spec_engine  = nil
+    local draft_model_ = nil
+    local ctx_dft_     = nil
+
     if opts.speculative and opts.speculative ~= false then
-        local Speculative = ion7.Speculative
-        local spec_type   = type(opts.speculative) == "string"
-                            and opts.speculative
-                            or  "ngram_cache"
-        local ok, s = pcall(Speculative.new, Speculative, ctx, nil, {
+        local spec_type = type(opts.speculative) == "string"
+                          and opts.speculative or "ngram_cache"
+
+        -- "draft" type requires a separate smaller model loaded as draft context.
+        -- "eagle3" uses built-in draft heads on the target model — no draft ctx.
+        if spec_type == "draft" then
+            if opts.draft_model then
+                local ok_dft, dft_m = pcall(ion7.Model.load, opts.draft_model, {
+                    n_gpu_layers = opts.draft_n_gpu_layers or 0,
+                })
+                if ok_dft then
+                    draft_model_ = dft_m
+                    local ok_ctx, dft_c = pcall(dft_m.context, dft_m, {
+                        n_ctx     = n_ctx,
+                        n_seq_max = 1,
+                    })
+                    if ok_ctx then
+                        ctx_dft_ = dft_c
+                    else
+                        io.stderr:write("[ion7.llm] draft context failed: " .. tostring(dft_c) .. "\n")
+                        draft_model_ = nil
+                    end
+                else
+                    io.stderr:write("[ion7.llm] draft model load failed: " .. tostring(dft_m) .. "\n")
+                end
+            else
+                io.stderr:write("[ion7.llm] speculative='draft' requires opts.draft_model\n")
+            end
+        end
+
+        local ok, s = pcall(ion7.Speculative.new, ion7.Speculative, ctx, ctx_dft_, {
             type    = spec_type,
             n_draft = opts.n_draft or 5,
         })
@@ -190,101 +222,314 @@ function llm.init(opts)
     end
 
     local gen = llm.Generator.new(ctx, vocab, cm, {
-        sampler        = sampler,
-        max_tokens     = opts.max_tokens or 2048,
-        think          = opts.think or false,
-        think_budget   = opts.think_budget,
-        native_budget  = native_budget,
-        speculative    = spec_engine,
+        sampler            = sampler,
+        max_tokens         = opts.max_tokens or 2048,
+        think              = opts.think or false,
+        think_budget       = opts.think_budget,
+        native_budget      = native_budget,
+        speculative        = spec_engine,
+        entropy_threshold  = opts.entropy_threshold,
     })
 
-    _state = { ion7 = ion7, model = model, vocab = vocab, ctx = ctx, cm = cm, gen = gen, opts = opts }
-    return llm
+    return setmetatable({
+        model         = model,
+        vocab         = vocab,
+        ctx           = ctx,
+        cm            = cm,
+        gen           = gen,
+        _ion7         = ion7,
+        _opts         = opts,
+        _spec         = spec_engine,
+        _draft_model  = draft_model_,
+        _ctx_dft      = ctx_dft_,
+    }, LLM)
 end
 
---- Free all resources.
-function llm.shutdown()
-    if _state.ctx   then _state.ctx:free()      end
-    if _state.model then _state.model:free()    end
-    if _state.ion7  then _state.ion7.shutdown() end
-    _state = {}
+-- ── Lifecycle ─────────────────────────────────────────────────────────────────
+
+--- Free all resources (VRAM, KV cache, model weights).
+function LLM:shutdown()
+    if self.gen      then self.gen:close()       end
+    if self._spec    then self._spec:free()      end
+    if self._ctx_dft then self._ctx_dft:free()   end
+    if self.ctx      then self.ctx:free()        end
+    if self._draft_model then self._draft_model:free() end
+    if self.model    then self.model:free()      end
+    if self._ion7    then self._ion7.shutdown()  end
+    self.model = nil; self.vocab = nil
+    self.ctx   = nil; self.cm   = nil; self.gen = nil
+    self._draft_model = nil; self._ctx_dft = nil; self._spec = nil
 end
 
--- ── Accessors ─────────────────────────────────────────────────────────────────
+-- ── Session management ────────────────────────────────────────────────────────
 
-function llm.model() assert(_state.model, "[ion7.llm] call init() first"); return _state.model end
-function llm.vocab() assert(_state.vocab, "[ion7.llm] call init() first"); return _state.vocab end
-function llm.ctx()   assert(_state.ctx,   "[ion7.llm] call init() first"); return _state.ctx   end
-function llm.cm()    assert(_state.cm,    "[ion7.llm] call init() first"); return _state.cm    end
-function llm.gen()   assert(_state.gen,   "[ion7.llm] call init() first"); return _state.gen   end
-
--- ── Convenience API ───────────────────────────────────────────────────────────
-
-local function _session(text)
-    local s = llm.Session.new({ system = _state.opts and _state.opts.system })
-    if type(text) == "string" then
-        s:add("user", text)
-    else
-        for _, m in ipairs(text) do s:add(m.role, m.content) end
+--- Create a Session pre-loaded with this engine's system prompt.
+--- @param  init_msgs  string|table?  Optional: user string or { {role,content}, ... }.
+--- @return Session
+function LLM:session(init_msgs)
+    local s = llm.Session.new({ system = self._opts.system })
+    if type(init_msgs) == "string" then
+        s:add("user", init_msgs)
+    elseif type(init_msgs) == "table" then
+        for _, m in ipairs(init_msgs) do s:add(m.role, m.content) end
     end
     return s
 end
 
---- One-shot blocking chat.
---- @param  text  string|table
---- @param  opts  table?  { on_token, max_tokens, sampler, grammar, think_budget }
---- @return Response
-function llm.chat(text, opts)
-    return _state.gen:chat(_session(text), opts or {})
+--- Fork a session: child shares KV history up to this point via kv_seq_cp.
+--- @param  session  Session
+--- @return Session
+function LLM:fork(session)
+    return self.cm:fork(session)
 end
 
---- Streaming coroutine. Yields string pieces.
---- @param  text  string|table
+--- Release a session's KV slot. Call when the session is permanently done.
+--- @param  session  Session
+function LLM:release(session)
+    self.cm:release(session)
+end
+
+-- ── KV checkpoint / rollback ──────────────────────────────────────────────────
+
+--- Save a KV snapshot. Allows undoing generation back to this point.
+--- @return LLM  self
+function LLM:checkpoint()
+    self.gen:checkpoint()
+    return self
+end
+
+--- Restore to the last checkpoint().
+--- @return LLM  self
+function LLM:rollback()
+    self.gen:rollback()
+    return self
+end
+
+-- ── Speculative decoding ──────────────────────────────────────────────────────
+
+--- Configure (or replace) speculative decoding at runtime.
+--- Call after engine:new() to attach speculation without reloading the model.
+---
+--- @param  opts  table
+---   opts.type              string   "ngram_cache" | "ngram_simple" | "ngram_map_k" |
+---                                   "eagle3" | "draft". Default: "ngram_cache".
+---   opts.n_draft           number?  Max draft tokens per step. Default: 5.
+---   opts.draft_model       string?  Path to draft .gguf (required for type="draft").
+---   opts.draft_ngl         number?  GPU layers for draft model. Default: 0.
+---   opts.entropy_threshold number?  Entropy gate in nats. nil = always draft.
+--- @return LLM  self
+function LLM:setup_speculative(opts)
+    opts = opts or {}
+    local ion7 = self._ion7
+
+    -- Free existing spec resources
+    if self._spec    then self._spec:free();     self._spec    = nil end
+    if self._ctx_dft then self._ctx_dft:free();  self._ctx_dft = nil end
+    if self._draft_model then
+        self._draft_model:free(); self._draft_model = nil
+    end
+
+    local spec_type = opts.type or "ngram_cache"
+    local ctx_dft   = nil
+
+    if spec_type == "draft" then
+        assert(opts.draft_model,
+            "[ion7.llm] setup_speculative: opts.draft_model required for type='draft'")
+        local dft_m = ion7.Model.load(opts.draft_model, {
+            n_gpu_layers = opts.draft_ngl or 0,
+        })
+        self._draft_model = dft_m
+        ctx_dft           = dft_m:context({ n_ctx = self.ctx:n_ctx_seq(), n_seq_max = 1 })
+        self._ctx_dft     = ctx_dft
+    end
+
+    local ok, s = pcall(ion7.Speculative.new, ion7.Speculative, self.ctx, ctx_dft, {
+        type    = spec_type,
+        n_draft = opts.n_draft or 5,
+    })
+
+    if not ok then
+        io.stderr:write("[ion7.llm] setup_speculative: " .. tostring(s) .. "\n")
+        return self
+    end
+
+    self._spec = s
+    self.gen:set_speculative(s)
+
+    if opts.entropy_threshold ~= nil then
+        self:set_spec_entropy_threshold(opts.entropy_threshold)
+    end
+
+    return self
+end
+
+--- Enable entropy-adaptive speculative gating.
+--- After each token sample, ctx:entropy(0) is measured. If entropy > threshold,
+--- the speculative draft step is skipped — normal single-token decoding is used.
+---
+--- Low entropy (model confident) → drafts accepted → throughput increase.
+--- High entropy (model uncertain) → drafts rejected → overhead avoided.
+---
+--- Typical values:
+---   0.5 nats — aggressive, drafts only when very confident
+---   1.0 nats — balanced (good default)
+---   2.0 nats — conservative, drafts unless nearly uniform distribution
+---   nil       — disabled, always speculate (default behaviour)
+---
+--- @param  threshold  number?
+--- @return LLM  self
+function LLM:set_spec_entropy_threshold(threshold)
+    self.gen:set_entropy_threshold(threshold)
+    return self
+end
+
+--- Disable speculative decoding entirely (detaches the engine).
+--- @return LLM  self
+function LLM:disable_speculative()
+    self.gen:set_speculative(nil)
+    return self
+end
+
+--- Print speculative decoding stats to stderr (acceptance rate, token counts).
+--- No-op if speculation was not configured.
+function LLM:spec_stats()
+    if self._spec then self._spec:stats() end
+end
+
+-- ── Introspection ─────────────────────────────────────────────────────────────
+
+--- KV usage statistics.
+--- @return table  { n_past, n_ctx, fill_pct, prefix_tokens, prefix_cached,
+---                  n_sink, eviction, slots_total, slots_free,
+---                  n_evictions, n_tokens_evicted }
+function LLM:ctx_usage()
+    local stats  = self.cm:stats()
+    local n_past = self.ctx:n_past()
+    local n_ctx  = self.ctx:n_ctx_seq()
+    stats.n_past   = n_past
+    stats.n_ctx    = n_ctx
+    stats.fill_pct = (n_ctx > 0) and (n_past / n_ctx * 100) or 0
+    return stats
+end
+
+-- ── Generation ────────────────────────────────────────────────────────────────
+
+--- One-shot blocking generation. Creates a temporary session internally.
+---
+--- @param  text  string|table  User message or message array { {role,content}, ... }.
 --- @param  opts  table?
---- @return function
-function llm.stream(text, opts)
-    return _state.gen:stream(_session(text), opts)
+---   opts.max_tokens  number?
+---   opts.grammar     table|string?
+---   opts.sampler     table?
+---   opts.on_token    function?   Called with each visible piece.
+---   opts.on_think    function?   Called with each piece inside <think>.
+--- @return Response
+function LLM:complete(text, opts)
+    return self.gen:chat(self:session(text), opts or {})
 end
 
---- Chat with grammar constraint. Output guaranteed to match grammar.
---- @param  text     string|table
---- @param  grammar  table|string  Grammar_obj or GBNF string.
+--- Blocking chat on a persistent session.
+---
+--- @param  session  Session
+--- @param  opts     table?  Same opts as complete().
+--- @return Response
+function LLM:chat(session, opts)
+    assert(session and session.messages,
+        "[ion7.llm] chat() requires a Session — use engine:session() to create one")
+    return self.gen:chat(session, opts or {})
+end
+
+--- Streaming on a persistent session. Yields visible pieces.
+--- Think-block pieces are routed to opts.on_think, not yielded.
+---
+--- @param  session  Session
+--- @param  opts     table?  Same opts as complete().
+--- @return function  iterator
+function LLM:stream(session, opts)
+    assert(session and session.messages,
+        "[ion7.llm] stream() requires a Session — use engine:session() to create one")
+    return self.gen:stream(session, opts or {})
+end
+
+--- Grammar-constrained blocking generation.
+--- @param  session  Session
+--- @param  grammar  table|string
 --- @param  opts     table?
 --- @return Response
-function llm.structured(text, grammar, opts)
-    opts = opts or {}
-    opts.grammar = grammar
-    return llm.chat(text, opts)
+function LLM:structured(session, grammar, opts)
+    opts = opts or {}; opts.grammar = grammar
+    return self:chat(session, opts)
 end
 
---- Streaming structured generation.
---- @param  text     string|table
+--- Grammar-constrained streaming.
+--- @param  session  Session
 --- @param  grammar  table|string
 --- @param  opts     table?
 --- @return function
-function llm.stream_structured(text, grammar, opts)
+function LLM:stream_structured(session, grammar, opts)
+    opts = opts or {}; opts.grammar = grammar
+    return self:stream(session, opts)
+end
+
+--- Agentic ReAct loop: generate → parse tool call → handler → continue.
+--- Session is updated in place (assistant + tool turns appended automatically).
+---
+--- @param  session  Session
+--- @param  opts     table
+---   opts.parse_fn   function  fn(text) → { name, args } | nil
+---   opts.handler    function  fn(name, args, session) → string
+---   opts.max_turns  number?   Default: 8.
+---   opts.grammar    table?    Grammar for each generation step.
+---   opts.max_tokens number?
+---   opts.on_token   function?
+---   opts.on_think   function?
+--- @return Response  last response
+--- @return number    turns executed
+function LLM:chat_with_tools(session, opts)
     opts = opts or {}
-    opts.grammar = grammar
-    return llm.stream(text, opts)
+    assert(opts.parse_fn, "[ion7.llm] chat_with_tools requires opts.parse_fn")
+    assert(opts.handler,  "[ion7.llm] chat_with_tools requires opts.handler")
+
+    local gen_opts = {
+        max_tokens = opts.max_tokens,
+        grammar    = opts.grammar,
+        on_token   = opts.on_token,
+        on_think   = opts.on_think,
+    }
+
+    local resp
+    local turns = 0
+
+    for _ = 1, opts.max_turns or 8 do
+        turns = turns + 1
+        resp  = self.gen:chat(session, gen_opts)
+        local call = opts.parse_fn(resp.text)
+        if not call then break end
+        session:add("assistant", resp.text)
+        local ok, result = pcall(opts.handler, call.name, call.args, session)
+        session:add("tool", ok and tostring(result) or "[tool error] " .. tostring(result))
+    end
+
+    return resp, turns
 end
 
 --- Parallel generation for N sessions via Scheduler.
---- Requires n_seq_max >= #jobs (set in llm.init).
---- @param  jobs  table  Array of { session, sampler?, max_tokens?, on_piece?, on_done? }
---- @return Scheduler  (after run() - all jobs completed)
-function llm.batch(jobs)
+--- Requires n_seq_max >= #jobs.
+--- @param  jobs  table  { session, sampler?, max_tokens?, on_piece?, on_done? }[]
+--- @return Scheduler
+function LLM:batch(jobs)
     assert(type(jobs) == "table" and #jobs >= 2,
-        "[ion7.llm] llm.batch() requires at least 2 jobs")
-    local n_seq = tonumber(_state.ctx:n_seq_max())
+        "[ion7.llm] batch() requires at least 2 jobs")
+    local n_seq = tonumber(self.ctx:n_seq_max())
     assert(n_seq >= #jobs, string.format(
         "[ion7.llm] n_seq_max=%d but %d jobs submitted", n_seq, #jobs))
 
     for i, job in ipairs(jobs) do job.session.seq_id = i - 1 end
 
-    local sched = llm.Scheduler.new(_state.ctx, _state.vocab, _state.cm)
+    local sched = llm.Scheduler.new(self.ctx, self.vocab, self.cm)
     for _, job in ipairs(jobs) do
         sched:submit(job.session, {
-            sampler    = job.sampler or _state.gen._sampler,
+            sampler    = job.sampler or self.gen._sampler,
             max_tokens = job.max_tokens or 2048,
             on_piece   = job.on_piece,
             on_done    = job.on_done,
@@ -293,6 +538,17 @@ function llm.batch(jobs)
     end
     return sched:run()
 end
+
+-- ── Module API ────────────────────────────────────────────────────────────────
+
+--- Create a new LLM engine.
+--- @param  opts  table  See LLM.new().
+--- @return LLM
+function llm.new(opts)
+    return LLM.new(opts)
+end
+
+llm.LLM = LLM
 
 -- Optional ion7-grammar integration
 llm.Grammar = (function()

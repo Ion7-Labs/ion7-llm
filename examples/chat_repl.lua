@@ -23,10 +23,8 @@ if not MODEL then
     os.exit(1)
 end
 
-local llm = require "ion7.llm"
-
-io.write("[loading model...]\n")
-llm.init({
+local llm    = require "ion7.llm"
+local engine = llm.new({
     model   = MODEL,
     system  = SYSTEM,
     sampler = SAMPLER,
@@ -34,11 +32,10 @@ llm.init({
 })
 io.write(string.format("[model] %s\n", MODEL:match("[^/]+$")))
 io.write(string.format("[system] %s\n", SYSTEM))
-io.write("[type your message, Enter to send - Ctrl+C or /exit to quit]\n")
+io.write("[type your message, Enter to send — Ctrl+C or /exit to quit]\n")
 io.write(string.rep("─", 60) .. "\n\n")
 
-local session = llm.Session.new({ system = SYSTEM })
-local gen     = llm.gen()
+local session = engine:session()
 
 while true do
     io.write("\27[1;32mYou>\27[0m ")
@@ -46,44 +43,48 @@ while true do
 
     local input = io.read("*l")
 
-    -- EOF (Ctrl+D) or /exit
     if not input or input == "/exit" or input == "/quit" then
         io.write("\n[bye]\n")
         break
     end
 
-    -- /reset - clear history
     if input == "/reset" then
-        session = llm.Session.new({ system = SYSTEM })
+        session = engine:session()
         io.write("\27[33m[session reset]\27[0m\n\n")
         goto continue
     end
 
-    -- /help
-    if input == "/help" then
-        io.write("  /reset   - clear conversation history\n")
-        io.write("  /exit    - quit\n\n")
+    if input == "/stats" then
+        local u = engine:ctx_usage()
+        io.write(string.format(
+            "\27[2m[KV %d/%d (%.0f%%) | evictions %d | prefix %d tok]\27[0m\n\n",
+            u.n_past, u.n_ctx, u.fill_pct, u.n_evictions, u.prefix_tokens))
         goto continue
     end
 
-    -- Skip empty input
+    if input == "/help" then
+        io.write("  /reset   — clear conversation history\n")
+        io.write("  /stats   — show KV cache usage\n")
+        io.write("  /exit    — quit\n\n")
+        goto continue
+    end
+
     if input:match("^%s*$") then goto continue end
 
     session:add("user", input)
 
-    io.write("\27[1;34mJoi>\27[0m ")
+    io.write("\27[1;34mAssistant>\27[0m ")
     io.flush()
 
-    local resp = gen:chat(session, {
-        on_token = function(piece)
-            io.write(piece)
-            io.flush()
-        end,
+    local resp = engine:chat(session, {
+        on_token = function(piece) io.write(piece); io.flush() end,
+        on_think = THINK and function()
+            -- think tokens suppressed — use on_think to show a spinner or log
+        end or nil,
     })
 
     io.write("\n")
 
-    -- Show think trace if available
     if THINK and resp:think() then
         local think = resp:think():match("^%s*(.-)%s*$")
         if #think > 0 then
@@ -98,4 +99,4 @@ while true do
     ::continue::
 end
 
-llm.shutdown()
+engine:shutdown()
