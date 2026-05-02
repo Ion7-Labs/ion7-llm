@@ -1,0 +1,120 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 940 540" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13">
+  <style>
+    .box        { fill: none; stroke: #6b7280; stroke-width: 1.4; rx: 6; ry: 6; }
+    .ctx        { fill: #f8fafc; stroke: #475569; stroke-width: 1.6; }
+    .session    { fill: #eef2ff; stroke: #4f46e5; }
+    .reserved   { fill: #fef9c3; stroke: #ca8a04; }
+    .row        { fill: #f1f5f9; stroke: #94a3b8; }
+    .free-row   { fill: #f8fafc; stroke: #cbd5e1; stroke-dasharray: 4 3; }
+    .share      { fill: #f0fdf4; stroke: #16a34a; }
+    .blocked    { fill: #fee2e2; stroke: #dc2626; }
+    .label      { fill: #1f2937; font-weight: 600; }
+    .sub        { fill: #4b5563; font-size: 11px; }
+    .group      { fill: #1f2937; font-weight: 700; font-size: 12px; }
+    .strong     { fill: #16a34a; font-weight: 700; font-size: 12px; }
+    .red        { fill: #dc2626; font-weight: 700; font-size: 12px; }
+    .arrow-cp   { stroke: #16a34a; stroke-width: 1.4; fill: none; marker-end: url(#tip-g); }
+    .arrow-block{ stroke: #dc2626; stroke-width: 1.6; fill: none; marker-end: url(#tip-r); stroke-dasharray: 5 3; }
+    .arrow-cross{ stroke: #dc2626; stroke-width: 2; }
+    @media (prefers-color-scheme: dark) {
+      .box        { stroke: #9ca3af; }
+      .ctx        { fill: #0f172a; stroke: #94a3b8; }
+      .session    { fill: #1e1b4b; stroke: #818cf8; }
+      .reserved   { fill: #422006; stroke: #facc15; }
+      .row        { fill: #1e293b; stroke: #94a3b8; }
+      .free-row   { fill: #0f172a; stroke: #475569; }
+      .share      { fill: #14532d; stroke: #4ade80; }
+      .blocked    { fill: #450a0a; stroke: #f87171; }
+      .label      { fill: #e5e7eb; }
+      .sub        { fill: #d1d5db; }
+      .group      { fill: #e5e7eb; }
+      .strong     { fill: #4ade80; }
+      .red        { fill: #f87171; }
+      .arrow-cp   { stroke: #4ade80; }
+      .arrow-block{ stroke: #f87171; }
+      .arrow-cross{ stroke: #f87171; }
+    }
+  </style>
+
+  <defs>
+    <marker id="tip-g" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#16a34a"/>
+    </marker>
+    <marker id="tip-r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#dc2626"/>
+    </marker>
+  </defs>
+
+  <!-- Title -->
+  <text class="group" x="20" y="24">Cross-session isolation — what is shared, what is not</text>
+
+  <!-- Shared Context container -->
+  <rect class="box ctx" x="160" y="50" width="640" height="280"/>
+  <text class="label" x="480" y="74" text-anchor="middle">ion7.core.Context (shared)</text>
+  <text class="sub"   x="480" y="92" text-anchor="middle">single KV memory bank, partitioned into n_seq_max rows</text>
+
+  <!-- KV rows -->
+  <rect class="box reserved" x="200" y="120" width="240" height="48"/>
+  <text class="label" x="320" y="144" text-anchor="middle">seq 0  ·  Prefix (reserved)</text>
+  <text class="sub"   x="320" y="160" text-anchor="middle">read-only after set_system</text>
+
+  <rect class="box row" x="200" y="180" width="240" height="48"/>
+  <text class="label" x="320" y="204" text-anchor="middle">seq 1  ·  Session A's KV row</text>
+  <text class="sub"   x="320" y="220" text-anchor="middle">isolated · only A reads / writes</text>
+
+  <rect class="box row" x="520" y="180" width="240" height="48"/>
+  <text class="label" x="640" y="204" text-anchor="middle">seq 2  ·  Session B's KV row</text>
+  <text class="sub"   x="640" y="220" text-anchor="middle">isolated · only B reads / writes</text>
+
+  <rect class="box free-row" x="200" y="240" width="240" height="44"/>
+  <text class="sub" x="320" y="266" text-anchor="middle">seq 3  ·  free</text>
+
+  <rect class="box free-row" x="520" y="240" width="240" height="44"/>
+  <text class="sub" x="640" y="266" text-anchor="middle">seq 4  ·  free</text>
+
+  <!-- Sessions outside -->
+  <rect class="box session" x="20" y="190" width="130" height="60"/>
+  <text class="label" x="85" y="214" text-anchor="middle">Session A</text>
+  <text class="sub"   x="85" y="230" text-anchor="middle">user-1 conversation</text>
+  <text class="sub"   x="85" y="244" text-anchor="middle">seq_id = 1</text>
+
+  <rect class="box session" x="810" y="190" width="120" height="60"/>
+  <text class="label" x="870" y="214" text-anchor="middle">Session B</text>
+  <text class="sub"   x="870" y="230" text-anchor="middle">user-2 conversation</text>
+  <text class="sub"   x="870" y="244" text-anchor="middle">seq_id = 2</text>
+
+  <!-- Session → row owner arrows -->
+  <path class="arrow-cp" d="M 150 220 L 198 204"/>
+  <path class="arrow-cp" d="M 808 220 L 762 204"/>
+
+  <!-- A → B blocked arrow (cross session leak path is forbidden) -->
+  <path class="arrow-block" d="M 150 230 C 200 310, 700 310, 808 230"/>
+  <text class="red" x="480" y="318" text-anchor="middle">no API path lets A read B's KV — `seq_snapshot(seq_id)` exports only the caller's row</text>
+
+  <!-- ── Below the context : the THREE explicit sharing points ── -->
+  <text class="group" x="20" y="370">Three (and only three) places where data crosses session boundaries — all explicit, all controllable :</text>
+
+  <rect class="box share" x="20" y="390" width="290" height="120"/>
+  <text class="label"  x="165" y="412" text-anchor="middle">① Prefix copy</text>
+  <text class="sub"    x="165" y="430" text-anchor="middle">kv_seq_cp(0 → seq_N, 0..n_prefix)</text>
+  <text class="sub"    x="165" y="446" text-anchor="middle">at first prepare(session)</text>
+  <text class="strong" x="165" y="468" text-anchor="middle">direction</text>
+  <text class="sub"    x="165" y="484" text-anchor="middle">prefix → sessions only</text>
+  <text class="sub"    x="165" y="500" text-anchor="middle">sessions never write to prefix</text>
+
+  <rect class="box share" x="325" y="390" width="290" height="120"/>
+  <text class="label"  x="470" y="412" text-anchor="middle">② cm:fork(session)</text>
+  <text class="sub"    x="470" y="430" text-anchor="middle">kv_seq_cp(src_seq → dst_seq)</text>
+  <text class="sub"    x="470" y="446" text-anchor="middle">explicit, opt-in</text>
+  <text class="strong" x="470" y="468" text-anchor="middle">guideline</text>
+  <text class="sub"    x="470" y="484" text-anchor="middle">do NOT expose to public</text>
+  <text class="sub"    x="470" y="500" text-anchor="middle">end-user endpoints</text>
+
+  <rect class="box share" x="630" y="390" width="290" height="120"/>
+  <text class="label"  x="775" y="412" text-anchor="middle">③ kv.radix exact-match</text>
+  <text class="sub"    x="775" y="430" text-anchor="middle">seq_restore(blob_A, seq_B)</text>
+  <text class="sub"    x="775" y="446" text-anchor="middle">only when toks_B == toks_A</text>
+  <text class="strong" x="775" y="468" text-anchor="middle">safety</text>
+  <text class="sub"    x="775" y="484" text-anchor="middle">B receives exactly what B</text>
+  <text class="sub"    x="775" y="500" text-anchor="middle">would have computed alone</text>
+</svg>

@@ -1,0 +1,114 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 940 500" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13">
+  <style>
+    .box       { fill: none; stroke: #6b7280; stroke-width: 1.4; rx: 6; ry: 6; }
+    .box-step  { fill: #fef3c7; stroke: #d97706; }
+    .box-data  { fill: #ecfeff; stroke: #0891b2; }
+    .box-loop  { fill: #f0fdf4; stroke: #16a34a; }
+    .box-evict { fill: #fee2e2; stroke: #dc2626; }
+    .box-out   { fill: #fdf2f8; stroke: #db2777; }
+    .label     { fill: #1f2937; font-weight: 600; }
+    .sub       { fill: #4b5563; font-size: 11px; }
+    .group     { fill: #1f2937; font-weight: 700; font-size: 12px; }
+    .arrow     { stroke: #6b7280; stroke-width: 1.4; fill: none; marker-end: url(#tip); }
+    .arrow-back{ stroke: #16a34a; stroke-width: 1.4; fill: none; marker-end: url(#tip-g); stroke-dasharray: 5 3; }
+    .arrow-evict { stroke: #dc2626; stroke-width: 1.4; fill: none; marker-end: url(#tip-r); stroke-dasharray: 4 2; }
+    @media (prefers-color-scheme: dark) {
+      .box       { stroke: #9ca3af; }
+      .box-step  { fill: #422006; stroke: #fbbf24; }
+      .box-data  { fill: #083344; stroke: #22d3ee; }
+      .box-loop  { fill: #14532d; stroke: #4ade80; }
+      .box-evict { fill: #450a0a; stroke: #f87171; }
+      .box-out   { fill: #500724; stroke: #f472b6; }
+      .label     { fill: #e5e7eb; }
+      .sub       { fill: #d1d5db; }
+      .group     { fill: #e5e7eb; }
+      .arrow     { stroke: #9ca3af; }
+      .arrow-back{ stroke: #4ade80; }
+      .arrow-evict { stroke: #f87171; }
+    }
+  </style>
+
+  <defs>
+    <marker id="tip" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#6b7280"/>
+    </marker>
+    <marker id="tip-g" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#16a34a"/>
+    </marker>
+    <marker id="tip-r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#dc2626"/>
+    </marker>
+  </defs>
+
+  <text class="group" x="20" y="24">engine:chat — generation hot path (per-token loop)</text>
+
+  <!-- Prefill -->
+  <rect class="box box-step" x="30" y="60" width="240" height="64"/>
+  <text class="label" x="150" y="86" text-anchor="middle">cm:prepare(session)</text>
+  <text class="sub"   x="150" y="104" text-anchor="middle">slot allocate · prefix copy ·</text>
+  <text class="sub"   x="150" y="118" text-anchor="middle">radix lookup · template re-render</text>
+
+  <!-- Sampler -->
+  <rect class="box box-step" x="300" y="60" width="240" height="64"/>
+  <text class="label" x="420" y="86" text-anchor="middle">resolve sampler</text>
+  <text class="sub"   x="420" y="104" text-anchor="middle">opts.sampler · default ·</text>
+  <text class="sub"   x="420" y="118" text-anchor="middle">profiles.balanced (fallback)</text>
+
+  <!-- Hot loop wrapper -->
+  <rect class="box box-loop" x="600" y="40" width="320" height="320"/>
+  <text class="label" x="760" y="62" text-anchor="middle">while n_generated &lt; max_tokens</text>
+
+  <rect class="box box-data" x="620" y="80"  width="280" height="36"/>
+  <text class="sub" x="760" y="103" text-anchor="middle">tok = sampler:sample(ctx, -1)</text>
+
+  <rect class="box box-data" x="620" y="124" width="280" height="36"/>
+  <text class="sub" x="760" y="147" text-anchor="middle">break on vocab:is_eog(tok)</text>
+
+  <rect class="box box-data" x="620" y="168" width="280" height="44"/>
+  <text class="sub" x="760" y="186" text-anchor="middle">piece = vocab:piece(tok, true)</text>
+  <text class="sub" x="760" y="201" text-anchor="middle">thinking_sm:feed(piece)  ·  on_piece</text>
+
+  <rect class="box box-data" x="620" y="220" width="280" height="36"/>
+  <text class="sub" x="760" y="243" text-anchor="middle">stop:feed(piece) → break</text>
+
+  <rect class="box box-evict" x="620" y="264" width="280" height="44"/>
+  <text class="sub" x="760" y="282" text-anchor="middle">if n_past + 1 + safety &gt; n_ctx_seq :</text>
+  <text class="sub" x="760" y="298" text-anchor="middle">cm:make_room(session, evict_chunk)</text>
+
+  <rect class="box box-data" x="620" y="316" width="280" height="36"/>
+  <text class="sub" x="760" y="339" text-anchor="middle">ctx:decode(tok_buf, 1, seq_id, n_past)</text>
+
+  <!-- Resolve order arrows -->
+  <path class="arrow" d="M 270 92 L 298 92"/>
+  <path class="arrow" d="M 540 92 L 598 92"/>
+
+  <!-- Loop back -->
+  <path class="arrow-back" d="M 760 360 C 920 360, 920 110, 920 95 L 902 95"/>
+
+  <!-- Mid-gen eviction sub-arrow -->
+  <path class="arrow-evict" d="M 760 308 L 760 314"/>
+
+  <!-- Post-generation -->
+  <rect class="box box-step" x="30" y="390" width="280" height="80"/>
+  <text class="label" x="170" y="418" text-anchor="middle">chat.parse.split(vocab, raw)</text>
+  <text class="sub"   x="170" y="436" text-anchor="middle">authoritative content / thinking /</text>
+  <text class="sub"   x="170" y="450" text-anchor="middle">tool_calls demux via the bridge</text>
+  <text class="sub"   x="170" y="464" text-anchor="middle">+ Lua fallback for non-default formats</text>
+
+  <rect class="box box-step" x="340" y="390" width="240" height="80"/>
+  <text class="label" x="460" y="418" text-anchor="middle">snapshot.save(ctx, seq_id)</text>
+  <text class="sub"   x="460" y="436" text-anchor="middle">refresh per-seq blob,</text>
+  <text class="sub"   x="460" y="450" text-anchor="middle">clear session._dirty,</text>
+  <text class="sub"   x="460" y="464" text-anchor="middle">radix:insert if enabled</text>
+
+  <rect class="box box-out" x="610" y="390" width="310" height="80"/>
+  <text class="label" x="765" y="418" text-anchor="middle">return Response</text>
+  <text class="sub"   x="765" y="436" text-anchor="middle">{ content, thinking, tool_calls,</text>
+  <text class="sub"   x="765" y="450" text-anchor="middle">tokens, stop_reason, perf }</text>
+
+  <!-- Loop end → post arrows -->
+  <path class="arrow" d="M 600 360 L 170 388"/>
+  <path class="arrow" d="M 310 425 L 338 425"/>
+  <path class="arrow" d="M 580 425 L 608 425"/>
+
+</svg>

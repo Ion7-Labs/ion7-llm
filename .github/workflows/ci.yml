@@ -1,0 +1,177 @@
+name: CI
+
+on:
+  push:
+    branches: [main, dev, "dev-*", "feat/*"]
+  pull_request:
+    branches: [main, dev]
+
+# Cancel in-progress runs on new push to same branch.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Pin the ion7-core release we test against. Bump in lockstep with
+  # any breaking change in ion7-core's public surface.
+  ION7_CORE_VERSION: latest
+  # The CI defaults to a tiny chat model that fits in <2 GB RAM and
+  # downloads quickly. Override per-PR via repository variables.
+  ION7_MODEL_URL: https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf
+  ION7_MODEL_FILE: qwen2.5-0.5b-instruct-q4_k_m.gguf
+  ION7_EMBED_URL: https://huggingface.co/Qwen/Qwen3-Embedding-0.6B-GGUF/resolve/main/Qwen3-Embedding-0.6B-Q8_0.gguf
+  ION7_EMBED_FILE: Qwen3-Embedding-0.6B-Q8_0.gguf
+
+jobs:
+  # ── 0. Lua syntax + module-load smoke (no native libs needed) ────────────
+  # 24 source files, 4 pure-Lua test files. luac -p catches outright
+  # syntax errors ; tests/00_modules.lua stubs ffi.load and require()s
+  # every module so a typoed `require "ion7.llm.foo"` inside engine.lua
+  # surfaces here in seconds rather than at first model boot.
+  lint:
+    name: Lua syntax + module load
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install LuaJIT
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y luajit curl
+
+      # Pure-Lua tests still pull `ion7.vendor.json` (and a couple of
+      # other helpers re-exported under `ion7.core.util.*`), so even
+      # the lint lane needs ion7-core's Lua tree on the path. We
+      # checkout the repo at HEAD — the lint suite never touches the
+      # native libraries, so the unbuilt Lua tree is enough.
+      - name: Checkout ion7-core sources
+        uses: actions/checkout@v4
+        with:
+          repository: Ion7-Labs/ion7-core
+          path: ion7-core
+
+      - name: luac -p (every src/ + tests/ + examples/ .lua file)
+        run: |
+          fail=0
+          for f in $(find src tests examples -name "*.lua" 2>/dev/null); do
+            if ! luajit -bl "$f" /dev/null 2>/dev/null; then
+              # luac would be cleaner but is not always packaged with luajit ;
+              # use loadfile through luajit instead.
+              luajit -e "local ok, err = loadfile('$f') ; if not ok then io.stderr:write('FAIL '..'$f'..' : '..tostring(err)..'\n') ; os.exit(1) end" \
+                || { echo "✗ syntax error in $f" ; fail=1 ; }
+            fi
+          done
+          test $fail -eq 0
+
+      - name: Pure-Lua test suite
+        env:
+          ION7_CORE_SRC: ${{ github.workspace }}/ion7-core/src
+        run: |
+          fail=0
+          for f in tests/00_modules.lua tests/02_response_session.lua \
+                   tests/03_partial_json_stop.lua tests/04_thinking_tools.lua ; do
+            echo "::group::$(basename "$f")"
+            luajit "$f" || fail=1
+            echo "::endgroup::"
+          done
+          test $fail -eq 0
+
+  # ── 1. Model-dependent suite (Linux x86_64 only — fastest CI lane) ───────
+  # Pulls a small chat-tuned + a small embedding model from HuggingFace,
+  # downloads the latest ion7-core release tarball (CPU build), wires
+  # the helper paths and runs every model-dependent suite.
+  #
+  # ADVISORY for now (continue-on-error : true) : the public ion7-core
+  # release tarball is not yet published. This job will gate on green
+  # once `ion7-core` 0.2 ships its first release. Until then it serves
+  # as an opt-in smoke test the maintainer can run via `act` or by
+  # manually pushing a release tag.
+  test-with-model:
+    name: Model-dependent tests (Linux x86_64)
+    runs-on: ubuntu-latest
+    needs: lint
+    continue-on-error: true
+    if: ${{ vars.ENABLE_MODEL_TESTS == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install LuaJIT
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y luajit curl
+
+      # ── ion7-core release tarball ─────────────────────────────────────────
+      - name: Cache ion7-core build
+        id: cache-core
+        uses: actions/cache@v4
+        with:
+          path: ion7-core
+          key: ion7-core-${{ env.ION7_CORE_VERSION }}-linux-x64-cpu
+
+      - name: Download ion7-core release
+        if: steps.cache-core.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ion7-core
+          if [ "$ION7_CORE_VERSION" = "latest" ]; then
+            url="https://github.com/Ion7-Labs/ion7-core/releases/latest/download/ion7-core-linux-x86_64-cpu.tar.gz"
+          else
+            url="https://github.com/Ion7-Labs/ion7-core/releases/download/$ION7_CORE_VERSION/ion7-core-linux-x86_64-cpu.tar.gz"
+          fi
+          curl -L -o ion7.tgz "$url"
+          tar xzf ion7.tgz --strip-components=1 -C ion7-core
+          ls ion7-core/lib/ ion7-core/src/
+
+      # ── Test models ───────────────────────────────────────────────────────
+      - name: Cache test models
+        id: cache-models
+        uses: actions/cache@v4
+        with:
+          path: models
+          key: models-${{ env.ION7_MODEL_FILE }}-${{ env.ION7_EMBED_FILE }}
+
+      - name: Download test models
+        if: steps.cache-models.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p models
+          curl -L -o "models/$ION7_MODEL_FILE" "$ION7_MODEL_URL"
+          curl -L -o "models/$ION7_EMBED_FILE" "$ION7_EMBED_URL"
+          ls -lh models/
+
+      # ── Run the suite ────────────────────────────────────────────────────
+      - name: Run full test suite
+        env:
+          ION7_CORE_SRC:        ${{ github.workspace }}/ion7-core/src
+          ION7_LIBLLAMA_PATH:   ${{ github.workspace }}/ion7-core/lib/libllama.so
+          ION7_LIBGGML_PATH:    ${{ github.workspace }}/ion7-core/lib/libggml.so
+          ION7_BRIDGE_PATH:     ${{ github.workspace }}/ion7-core/lib/ion7_bridge.so
+          ION7_MODEL:           ${{ github.workspace }}/models/${{ env.ION7_MODEL_FILE }}
+          ION7_EMBED:           ${{ github.workspace }}/models/${{ env.ION7_EMBED_FILE }}
+          ION7_GPU_LAYERS:      "0"
+          LD_LIBRARY_PATH:      ${{ github.workspace }}/ion7-core/lib
+        run: bash tests/run_all.sh
+
+  # ── 2. Compatibility check : module-load against current ion7-core main ─
+  # Pulls ion7-core's HEAD, runs only the no-model module-load suite. A
+  # red signal here means our `require "ion7.core.*"` paths drifted
+  # against upstream — usually a renamed module or a moved helper.
+  compat-core-head:
+    name: Compatibility — ion7-core main
+    runs-on: ubuntu-latest
+    needs: lint
+    continue-on-error: true   # advisory, not gating
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install LuaJIT
+        run: sudo apt-get update -qq && sudo apt-get install -y luajit
+
+      - name: Checkout ion7-core HEAD
+        uses: actions/checkout@v4
+        with:
+          repository: Ion7-Labs/ion7-core
+          path: ion7-core-head
+
+      - name: Module-load smoke against ion7-core HEAD
+        env:
+          ION7_CORE_SRC: ${{ github.workspace }}/ion7-core-head/src
+        run: luajit tests/00_modules.lua

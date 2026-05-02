@@ -1,50 +1,93 @@
 # ion7-llm examples
 
-Progressive examples from minimal to advanced.
+Nine standalone scripts that walk every layer of the public API. Each
+one is runnable from the project root with no extra setup beyond a
+model path.
 
 ## Setup
 
 ```bash
-cd /path/to/ion7-llm
-
-export ION7_MODEL=/path/to/model.gguf
-export ION7_CORE_PATH=../ion7-core   # default: ../ion7-core
+export ION7_MODEL=/path/to/chat.gguf       # required for examples 01-08
+export ION7_EMBED=/path/to/embed.gguf      # required for example 09
+export ION7_GPU_LAYERS=99                  # optional, override n_gpu_layers
 ```
 
-Run from the **project root**:
+ion7-llm depends on `ion7.core`. The examples expect the in-tree
+`src/?.lua` to find both, so run them from the **project root** :
 
 ```bash
 luajit examples/01_chat.lua
 ```
 
-## Examples
-
-| File | Concepts | Difficulty |
-|------|----------|------------|
-| [01_chat.lua](01_chat.lua) | `llm.init`, `llm.chat`, streaming, `resp:summary()` | ★☆☆☆ |
-| [02_sessions.lua](02_sessions.lua) | `Session`, multi-turn KV reuse, `fork`, serialize/deserialize | ★★☆☆ |
-| [03_grammar.lua](03_grammar.lua) | `llm.structured`, `llm.stream_structured`, `from_type`, `from_json_schema`, `from_enum`, `GrammarContext`, tool-call grammar | ★★☆☆ |
-| [04_multi_session.lua](04_multi_session.lua) | `llm.gen`, `llm.batch`, Generator vs Scheduler, routing logic | ★★★☆ |
-| [05_thinking.lua](05_thinking.lua) | `think=true`, `think_budget`, `resp:think()`, `checkpoint/rollback`, "thinking" profile | ★★★☆ |
-| [06_eviction_hook.lua](06_eviction_hook.lua) | `on_evict` hook, `Session:format()`, summarization, silent drop + logging, eviction stats | ★★★☆ |
+If you are working off a built ion7-core dist tarball, point
+`ION7_LIBLLAMA_PATH`, `ION7_LIBGGML_PATH` and `ION7_BRIDGE_PATH` at
+the bundled `.so` files (or use the dist's `bin/ion7-load.lua`
+preamble) so the FFI loader finds them.
 
 ## What each example shows
 
-**01 - Chat**: the minimal pipeline. Init, call, print, shutdown. Shows streaming and the `resp:summary()` one-liner.
+| File | Topic | Concepts demonstrated |
+|------|-------|----------------------|
+| [01_chat.lua](01_chat.lua) | minimal pipeline | `llm.pipeline`, `Session`, `engine:chat`, `Response` |
+| [02_streaming.lua](02_streaming.lua) | typed-chunk stream | `engine:stream`, content / thinking / `tool_call_*` / stop chunks |
+| [03_multi_turn.lua](03_multi_turn.lua) | conversation history | KV reuse via per-seq snapshot, `cm:stats()` |
+| [04_pool.lua](04_pool.lua) | concurrent sessions | `Pool`, one-batch-per-tick across N slots, ~6× aggregate speed-up |
+| [05_grammar.lua](05_grammar.lua) | structured output | `ion7-grammar` `from_type` / `from_json_schema` → constrained sampler |
+| [06_tools.lua](06_tools.lua) | tool calling | `Tool`, `ToolSet`, `tools.loop.run`, interleaved-thinking dispatch |
+| [07_thinking.lua](07_thinking.lua) | reasoning models | `opts.thinking`, `opts.think_budget`, `<think>` demux |
+| [08_persistence.lua](08_persistence.lua) | save / load | JSON history + per-seq KV file round-trip |
+| [09_embed.lua](09_embed.lua) | embeddings | `Embed`, cosine similarity, nearest-neighbour query |
+| [10_radix.lua](10_radix.lua) | exact-match prefix cache | `kv.radix`, warm-start identical prompts, LRU stats |
 
-**02 - Sessions**: the core of multi-turn. `Session:add()` + `gen:chat(session)` reuses the KV cache across turns - the model only processes new tokens. `fork()` creates independent branches from any point. `serialize/deserialize` for cross-session persistence.
+## Reading order
 
-**03 - Grammar**: how ion7-llm integrates with ion7-grammar. Every output is guaranteed to match the grammar - enforced token-by-token on the GPU. Shows 7 patterns: enum, JSON Schema, type annotation, `opts.grammar`, streaming, `GrammarContext`, tool calls.
+The progression is incremental — each file assumes the patterns of
+the previous one without re-explaining. If you only have time for
+three, read **01**, **02** and **05** : minimal chat, streaming, and
+constrained output cover the typical happy path.
 
-**04 - Multi-session**: `llm.batch()` routes to the Scheduler when N ≥ 2 sessions. At each generation step, the Scheduler sends 1 token per session in a single `llama_decode()` call. All sessions run in parallel - not interleaved coroutines.
+## Contracts every example follows
 
-**05 - Thinking**: reasoning models (Qwen3.5, DeepSeek-R1, Phi-4). `think=true` strips `<think>...</think>` from `resp.text`. `resp:think()` returns the raw trace. `think_budget` caps the thinking phase. `checkpoint/rollback` saves and restores the KV cache for speculative generation.
+- Reads paths from env vars only ; no hardcoded fallbacks.
+- Calls `ion7.init({ log_level = 0 })` / `ion7.shutdown()` at the
+  top and bottom.
+- Frees its `Engine`, `Pool`, `Embed`, `Context`, `Model` before
+  exit (via `cm:release` + `ctx:free` + `model:free`).
+- Defaults `n_gpu_layers = 0` so every script runs on CPU-only
+  laptops, but honours `ION7_GPU_LAYERS` when set.
+- Uses the model's embedded chat template via `cm:set_system` +
+  `Session:add_user` / `add_assistant` rather than hand-rolling the
+  prompt format.
 
-**06 - Eviction hook**: how to intercept context overflow events. Option A: compress evicted messages into a 1-sentence summary via `on_evict` + `gen:complete()` - keeps the conversation coherent across context resets. Option B: silent drop with an audit log - zero inference cost, plug into external memory (ion7-embed / RAG) via the log. Shows `Session:format()`, eviction stats (`n_evictions`, `n_tokens_evicted`), and the `[Earlier: ...]` injection pattern.
+## Notes on small models
 
-## Notes
+The example output we ship with these scripts was produced against a
+3 B-parameter chat model. A 3 B model is enough to demonstrate the
+plumbing, but it is sometimes too small to follow tool-call protocols
+reliably (example 06) or to fill a complex JSON Schema with rich data
+(example 05). Re-running with a 7-30 B chat model gives noticeably
+better output without changing any code.
 
-- Example 03 requires `ion7-grammar` at `../ion7-grammar` (or set `ION7_GRAMMAR`).
-- All examples require `ION7_MODEL` to be set.
-- `n_seq_max` in example 04 must match the number of batch jobs.
-- Example 06: set `N_CTX=512` to trigger overflow quickly and observe the eviction hook firing.
+## A handful of one-liners
+
+Drop these into a Lua REPL after `package.path = "./src/?.lua;./src/?/init.lua;" .. package.path` to explore the API interactively.
+
+```lua
+local llm  = require "ion7.llm"
+
+-- Smallest possible call : engine + session + chat.
+local cm, engine = llm.pipeline(ctx, vocab)
+print(engine:complete("hi", { max_tokens = 12 }).content)
+
+-- Streaming generator for a typewriter UI.
+for chunk in engine:stream(session, { max_tokens = 64 }) do
+    if chunk.kind == "content" then io.write(chunk.text) ; io.flush() end
+end
+
+-- Schema-constrained one-shot.
+local r = engine:complete("Describe Linus Torvalds.", {
+    schema = { type = "object",
+               properties = { name = { type = "string" }, role = { type = "string" } },
+               required = { "name", "role" } },
+})
+```

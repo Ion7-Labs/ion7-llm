@@ -1,12 +1,18 @@
---- Minimal test framework for ion7-core.
---- No external dependencies.
+--- @module tests.framework
+--- @author  ion7 / Ion7 Project Contributors
+---
+--- Minimal test framework — same shape as the one in ion7-core, kept
+--- in sync deliberately so a developer moving between the two trees
+--- does not have to context-switch on the assertion vocabulary.
+---
+--- No external dependencies. ANSI colour codes go through stdout.
 
 local M = {}
 
 M.pass      = 0
 M.fail      = 0
 M.n_skipped = 0
-M._suite = "?"
+M._suite    = "?"
 
 function M.suite(name)
     M._suite = name
@@ -60,7 +66,6 @@ function M.near(a, b, tol, msg)
     end
 end
 
---- Check type
 function M.is_type(v, expected, msg)
     if type(v) ~= expected then
         error(string.format("%s: expected type %s, got %s (%s)",
@@ -68,7 +73,6 @@ function M.is_type(v, expected, msg)
     end
 end
 
---- Check v > threshold
 function M.gt(v, threshold, msg)
     if not (v > threshold) then
         error(string.format("%s: expected > %s, got %s",
@@ -76,7 +80,6 @@ function M.gt(v, threshold, msg)
     end
 end
 
---- Check v >= threshold
 function M.gte(v, threshold, msg)
     if not (v >= threshold) then
         error(string.format("%s: expected >= %s, got %s",
@@ -84,7 +87,6 @@ function M.gte(v, threshold, msg)
     end
 end
 
---- Check string contains pattern
 function M.contains(s, pattern, msg)
     if type(s) ~= "string" or not s:find(pattern, 1, true) then
         error(string.format("%s: '%s' not found in '%s'",
@@ -92,7 +94,6 @@ function M.contains(s, pattern, msg)
     end
 end
 
---- Check value is in a set (table of allowed values)
 function M.one_of(v, set, msg)
     for _, allowed in ipairs(set) do
         if v == allowed then return end
@@ -101,7 +102,6 @@ function M.one_of(v, set, msg)
         msg or "one_of", tostring(v), table.concat(set, ", ")), 2)
 end
 
---- Run fn and check it does NOT error
 function M.no_error(fn, msg)
     local ok, err = pcall(fn)
     if not ok then
