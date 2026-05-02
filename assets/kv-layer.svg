@@ -1,0 +1,117 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 940 500" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13">
+  <style>
+    .box       { fill: none; stroke: #6b7280; stroke-width: 1.4; rx: 6; ry: 6; }
+    .box-cm    { fill: #fef3c7; stroke: #d97706; }
+    .box-slot  { fill: #f0fdf4; stroke: #16a34a; }
+    .box-pre   { fill: #fdf4ff; stroke: #9333ea; }
+    .box-snap  { fill: #ecfeff; stroke: #0891b2; }
+    .box-evic  { fill: #fee2e2; stroke: #dc2626; }
+    .box-radix { fill: #ecfccb; stroke: #65a30d; }
+    .box-sess  { fill: #eef2ff; stroke: #4f46e5; }
+    .box-row   { fill: #f1f5f9; stroke: #475569; }
+    .reserved  { fill: #fef9c3; stroke: #ca8a04; }
+    .label     { fill: #1f2937; font-weight: 600; }
+    .sub       { fill: #4b5563; font-size: 11px; }
+    .group     { fill: #1f2937; font-weight: 700; font-size: 12px; }
+    .arrow     { stroke: #6b7280; stroke-width: 1.4; fill: none; marker-end: url(#tip); }
+    .arrow-d   { stroke: #9ca3af; stroke-width: 1.2; stroke-dasharray: 4 3; fill: none; marker-end: url(#tip); }
+    @media (prefers-color-scheme: dark) {
+      .box       { stroke: #9ca3af; }
+      .box-cm    { fill: #422006; stroke: #fbbf24; }
+      .box-slot  { fill: #14532d; stroke: #4ade80; }
+      .box-pre   { fill: #4a044e; stroke: #d946ef; }
+      .box-snap  { fill: #083344; stroke: #22d3ee; }
+      .box-evic  { fill: #450a0a; stroke: #f87171; }
+      .box-radix { fill: #1a2e05; stroke: #84cc16; }
+      .box-sess  { fill: #1e1b4b; stroke: #818cf8; }
+      .box-row   { fill: #0f172a; stroke: #94a3b8; }
+      .reserved  { fill: #422006; stroke: #facc15; }
+      .label     { fill: #e5e7eb; }
+      .sub       { fill: #d1d5db; }
+      .group     { fill: #e5e7eb; }
+      .arrow, .arrow-d { stroke: #9ca3af; }
+    }
+  </style>
+
+  <defs>
+    <marker id="tip" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#6b7280"/>
+    </marker>
+  </defs>
+
+  <!-- Title -->
+  <text class="group" x="20" y="24">KV layer — one shared Context, N independent sessions</text>
+
+  <!-- ContextManager top -->
+  <rect class="box box-cm" x="320" y="50" width="300" height="64"/>
+  <text class="label" x="470" y="76" text-anchor="middle">ContextManager</text>
+  <text class="sub"   x="470" y="94" text-anchor="middle">prepare · make_room · fork · set_system · stats</text>
+  <text class="sub"   x="470" y="108" text-anchor="middle">+ before_encode / on_evict / sink_fn hooks</text>
+
+  <!-- Five collaborators (added radix) -->
+  <rect class="box box-slot" x="20"  y="160" width="160" height="60"/>
+  <text class="label" x="100" y="186" text-anchor="middle">Slots</text>
+  <text class="sub"   x="100" y="202" text-anchor="middle">seq_id pool</text>
+  <text class="sub"   x="100" y="214" text-anchor="middle">acquire / release / capacity</text>
+
+  <rect class="box box-pre" x="200" y="160" width="160" height="60"/>
+  <text class="label" x="280" y="186" text-anchor="middle">Prefix</text>
+  <text class="sub"   x="280" y="202" text-anchor="middle">system prompt encoded</text>
+  <text class="sub"   x="280" y="214" text-anchor="middle">into reserved seq 0</text>
+
+  <rect class="box box-snap" x="380" y="160" width="160" height="60"/>
+  <text class="label" x="460" y="186" text-anchor="middle">snapshot</text>
+  <text class="sub"   x="460" y="202" text-anchor="middle">per-seq blob save</text>
+  <text class="sub"   x="460" y="214" text-anchor="middle">/ restore wrappers</text>
+
+  <rect class="box box-evic" x="560" y="160" width="160" height="60"/>
+  <text class="label" x="640" y="186" text-anchor="middle">eviction</text>
+  <text class="sub"   x="640" y="202" text-anchor="middle">message · fifo strategies</text>
+  <text class="sub"   x="640" y="214" text-anchor="middle">prefix-pinned + dynamic sink</text>
+
+  <rect class="box box-radix" x="740" y="160" width="180" height="60"/>
+  <text class="label" x="830" y="186" text-anchor="middle">radix</text>
+  <text class="sub"   x="830" y="202" text-anchor="middle">exact-match prefix cache</text>
+  <text class="sub"   x="830" y="214" text-anchor="middle">LRU on KV blobs</text>
+
+  <!-- Arrows from ContextManager to five -->
+  <path class="arrow" d="M 380 114 L 130 158"/>
+  <path class="arrow" d="M 420 114 L 290 158"/>
+  <path class="arrow" d="M 470 114 L 470 158"/>
+  <path class="arrow" d="M 520 114 L 640 158"/>
+  <path class="arrow" d="M 560 114 L 820 158"/>
+
+  <!-- Underlying ion7.core.Context KV cache layout -->
+  <text class="group" x="20" y="280">underlying ion7.core.Context (kv_unified, n_seq_max = 4) — 4 KV rows</text>
+  <rect class="box reserved" x="40"  y="300" width="200" height="44"/>
+  <text class="label" x="140" y="325" text-anchor="middle">seq 0  ·  reserved (Prefix)</text>
+  <rect class="box box-row"  x="260" y="300" width="200" height="44"/>
+  <text class="label" x="360" y="325" text-anchor="middle">seq 1  ·  Session A</text>
+  <rect class="box box-row"  x="480" y="300" width="200" height="44"/>
+  <text class="label" x="580" y="325" text-anchor="middle">seq 2  ·  Session B</text>
+  <rect class="box box-row"  x="700" y="300" width="220" height="44"/>
+  <text class="label" x="810" y="325" text-anchor="middle">seq 3  ·  free</text>
+
+  <!-- Sessions on the side -->
+  <rect class="box box-sess" x="120" y="390" width="240" height="60"/>
+  <text class="label" x="240" y="414" text-anchor="middle">Session A</text>
+  <text class="sub"   x="240" y="430" text-anchor="middle">seq_id = 1  ·  n_past = 312</text>
+  <text class="sub"   x="240" y="442" text-anchor="middle">_seq_snapshot = blob_A</text>
+
+  <rect class="box box-sess" x="400" y="390" width="240" height="60"/>
+  <text class="label" x="520" y="414" text-anchor="middle">Session B</text>
+  <text class="sub"   x="520" y="430" text-anchor="middle">seq_id = 2  ·  n_past = 488</text>
+  <text class="sub"   x="520" y="442" text-anchor="middle">_seq_snapshot = blob_B</text>
+
+  <!-- Prefix to Session arrows (kv_seq_cp) -->
+  <path class="arrow-d" d="M 240 344 L 240 388"/>
+  <path class="arrow-d" d="M 520 344 L 520 388"/>
+  <path class="arrow-d" d="M 140 343 L 140 370 L 240 370 L 240 388"/>
+  <path class="arrow-d" d="M 140 343 L 140 370 L 520 370 L 520 388"/>
+  <text class="sub" x="120" y="365" text-anchor="end">kv_seq_cp at first prepare</text>
+
+  <!-- Radix → Sessions arrow (warm-start) -->
+  <path class="arrow-d" d="M 830 220 L 830 360 L 640 360 L 640 388"/>
+  <text class="sub" x="850" y="380" text-anchor="start">seq_restore on hit</text>
+
+</svg>
