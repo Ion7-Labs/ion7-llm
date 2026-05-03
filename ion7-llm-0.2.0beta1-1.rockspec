@@ -31,7 +31,7 @@ description = {
 
 dependencies = {
     "lua >= 5.1",
-    "ion7-core >= 0.1.0beta2",
+    "ion7-core >= 0.1.0beta4",
     -- ion7-core declares lua-cjson as a transitive dep, so the JSON
     -- helpers ion7-llm imports via `require "ion7.vendor.json"` resolve
     -- without an explicit re-declaration here.
