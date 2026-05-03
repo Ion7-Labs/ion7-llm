@@ -26,6 +26,7 @@ require "tests.helpers"
 
 local PartialJson = require "ion7.llm.util.partial_json"
 local Stop        = require "ion7.llm.stop"
+local json        = require "ion7.vendor.json"
 
 -- ════════════════════════════════════════════════════════════════════════
 -- partial_json — the streaming JSON accumulator
@@ -74,7 +75,7 @@ T.test("nested arrays + objects close together at the right depth", function()
     T.eq(b:complete(), true)
     local v = b:value()
     T.eq(v.a[3].b, "c")
-    T.eq(v.d,      nil) -- JSON null may decode to nil — accept either
+    T.eq(v.d, json.null)
 end)
 
 T.test("string contents containing braces don't fool the balance counter", function()
