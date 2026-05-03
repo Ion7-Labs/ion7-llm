@@ -31,6 +31,23 @@ local function _add_path(prefix)
     end
 end
 
+local function _probe_sibling(env_var, marker_path, candidates)
+    local override = os.getenv(env_var)
+    if override and override ~= "" then
+        _add_path(override)
+        return true
+    end
+    for _, candidate in ipairs(candidates) do
+        local f = io.open(candidate .. "/" .. marker_path, "r")
+        if f then
+            f:close()
+            _add_path(candidate)
+            return true
+        end
+    end
+    return false
+end
+
 local function _bootstrap_paths()
     -- Local ion7-llm sources first.
     _add_path("./src")
@@ -39,22 +56,17 @@ local function _bootstrap_paths()
     -- two sibling layouts the project actually uses
     -- (`_updates/ion7-core/src/` next to `_updates/ion7-llm/`, and
     -- the production `../ion7-core/src/`).
-    local override = os.getenv("ION7_CORE_SRC")
-    if override and override ~= "" then
-        _add_path(override)
-        return
-    end
-    for _, candidate in ipairs({
+    _probe_sibling("ION7_CORE_SRC", "ion7/core/init.lua", {
         "../ion7-core/src",
         "../../ion7-core/src",
-    }) do
-        local f = io.open(candidate .. "/ion7/core/init.lua", "r")
-        if f then
-            f:close()
-            _add_path(candidate)
-            return
-        end
-    end
+    })
+
+    -- ion7-grammar sources : same probe pattern, optional. Files that
+    -- do not require ion7.grammar simply ignore the missing path.
+    _probe_sibling("ION7_GRAMMAR_SRC", "ion7/grammar/init.lua", {
+        "../ion7-grammar/src",
+        "../../ion7-grammar/src",
+    })
 end
 
 _bootstrap_paths()
