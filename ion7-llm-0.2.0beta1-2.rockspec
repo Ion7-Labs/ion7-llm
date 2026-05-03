@@ -1,5 +1,5 @@
 package = "ion7-llm"
-version = "0.2.0beta1-1"
+version = "0.2.0beta1-2"
 
 source = {
     url = "git+https://github.com/Ion7-Labs/ion7-llm.git",
