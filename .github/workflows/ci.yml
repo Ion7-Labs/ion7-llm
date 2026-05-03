@@ -34,10 +34,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install LuaJIT
+      - name: Install LuaJIT + luarocks
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y luajit curl
+          sudo apt-get install -y luajit luarocks build-essential curl
+
+      - name: Install lua-cjson
+        # ion7.vendor.json (re-exported through ion7-core) wraps cjson,
+        # so even the lint job needs the rock available on the path.
+        run: sudo luarocks install lua-cjson
 
       # Pure-Lua tests still pull `ion7.vendor.json` (and a couple of
       # other helpers re-exported under `ion7.core.util.*`), so even
@@ -95,10 +100,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install LuaJIT
+      - name: Install LuaJIT + luarocks
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y luajit curl
+          sudo apt-get install -y luajit luarocks build-essential curl
+
+      - name: Install lua-cjson
+        run: sudo luarocks install lua-cjson
 
       # ── ion7-core release tarball ─────────────────────────────────────────
       - name: Cache ion7-core build
@@ -162,8 +170,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install LuaJIT
-        run: sudo apt-get update -qq && sudo apt-get install -y luajit
+      - name: Install LuaJIT + luarocks
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y luajit luarocks build-essential
+
+      - name: Install lua-cjson
+        run: sudo luarocks install lua-cjson
 
       - name: Checkout ion7-core HEAD
         uses: actions/checkout@v4

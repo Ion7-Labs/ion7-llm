@@ -143,7 +143,7 @@ setmetatable(llm, {
 
 -- ── Version + capability snapshot ────────────────────────────────────────
 
-llm.VERSION = "0.2.0"
+llm.VERSION = "0.2.0-beta1"
 
 --- Capability snapshot of the ion7-llm runtime, complementing
 --- `ion7.core.capabilities()`. Reflects what the chat pipeline can

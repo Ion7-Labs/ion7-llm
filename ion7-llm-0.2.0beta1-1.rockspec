@@ -1,9 +1,9 @@
 package = "ion7-llm"
-version = "0.2-0"
+version = "0.2.0beta1-1"
 
 source = {
     url = "git+https://github.com/Ion7-Labs/ion7-llm.git",
-    tag = "v0.2.0",
+    tag = "v0.2.0-beta1",
 }
 
 description = {
@@ -31,9 +31,14 @@ description = {
 
 dependencies = {
     "lua >= 5.1",
-    "ion7-core >= 0.2",
-    -- Optional: ion7-grammar for JSON-Schema / regex / type-driven
-    -- constrained sampling. Install with: luarocks install ion7-grammar
+    "ion7-core >= 0.1.0beta2",
+    -- ion7-core declares lua-cjson as a transitive dep, so the JSON
+    -- helpers ion7-llm imports via `require "ion7.vendor.json"` resolve
+    -- without an explicit re-declaration here.
+    --
+    -- Optional : ion7-grammar for JSON-Schema / regex / ABNF / EBNF /
+    -- type-driven constrained sampling. Install with :
+    --   luarocks install ion7-grammar
 }
 
 build = {
